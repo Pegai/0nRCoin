@@ -20,6 +20,13 @@ yetkisi kaldırma ve metadata'yı sabitleme (immutable) seçenekleri.
   (ve varsa metadata URI) zincire yazılır.
 - **Gelişmiş yetkiler**: Mint yetkisini kaldırma (arzı sabitleme), freeze
   yetkisini kaldırma, metadata'yı immutable yapma.
+- **Likidite Havuzu sekmesi** (Raydium entegrasyonu):
+  - **Havuz Ara**: Bir token'ın mevcut Raydium havuzlarını, fiyatını ve
+    likiditesini görüntüleme (salt okunur, cüzdan gerekmez, yalnızca Mainnet).
+  - **Havuz Oluştur**: İki token için Raydium CPMM (sabit-çarpım) havuzu
+    oluşturma — Devnet ve Mainnet'te çalışır.
+  - **Likidite Ekle/Çıkar**: Bilinen bir havuza likidite ekleme veya LP
+    token'ı geri çekme.
 - **Güvenlik**: Özel anahtarlar hiçbir zaman siteden çıkmaz; her işlem
   kullanıcının kendi cüzdanında imzalanır.
 
@@ -82,6 +89,10 @@ sadece zincir dışı logo/açıklama eklenmez.
 - Mainnet'te işlem yapmadan önce **Devnet üzerinde test edin**.
 - Mint/freeze yetkisi kaldırma ve metadata'yı sabitleme işlemleri **geri
   alınamaz**.
+- **Likidite havuzu oluşturma ve likidite ekleme/çıkarma işlemleri de geri
+  alınamaz** ve gerçek token/SOL yatırmanızı gerektirir. Yanlış miktar
+  girmek havuzun başlangıç fiyatını yanlış ayarlayabilir. Mutlaka önce
+  Devnet'te deneyin.
 - Kripto varlık oluşturmak ve dağıtmak, bulunduğunuz yargı bölgesine göre
   yasal sorumluluklar doğurabilir. Bu proje bir yatırım tavsiyesi değildir.
 
@@ -93,3 +104,4 @@ sadece zincir dışı logo/açıklama eklenmez.
 - [@solana/wallet-adapter](https://github.com/anza-xyz/wallet-adapter)
 - [@metaplex-foundation/mpl-token-metadata](https://github.com/metaplex-foundation/mpl-token-metadata)
 - [Irys](https://irys.xyz/) (logo/metadata için kalıcı depolama)
+- [@raydium-io/raydium-sdk-v2](https://github.com/raydium-io/raydium-sdk-V2) (likidite havuzu)

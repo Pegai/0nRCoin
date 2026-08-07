@@ -194,12 +194,130 @@ body {
   line-height: 1.5;
 }
 
+/* Page tabs */
+.page-tabs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 16px 24px 0;
+  flex-wrap: wrap;
+}
+
+.page-tab {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.page-tab:hover {
+  color: var(--text);
+}
+
+.page-tab--active {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* Sub tabs (within a page) */
+.subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.subtab {
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.subtab--active {
+  border-color: var(--accent-a);
+  color: var(--accent-b);
+}
+
+.subtab-desc {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+
+.pool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.pool-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 18px;
+}
+
+.pool-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 1rem;
+}
+
+.pool-card__badge {
+  background: rgba(139, 92, 246, 0.15);
+  color: var(--accent-b);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.pool-card__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.pool-card__row span:first-child {
+  color: var(--text-muted);
+}
+
+.pool-card__id {
+  font-size: 0.75rem;
+  word-break: break-all;
+  color: var(--accent-b);
+  text-align: right;
+}
+
 /* Form section */
 .form-section {
   max-width: 720px;
   margin: 56px auto 80px;
   padding: 0 24px;
   flex: 1;
+}
+
+.form-section--wide {
+  max-width: 820px;
 }
 
 .token-form,
@@ -372,6 +490,12 @@ body {
   background: rgba(34, 211, 238, 0.1);
   border: 1px solid rgba(34, 211, 238, 0.3);
   color: var(--accent-b);
+}
+
+.alert--warning {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fbbf24;
 }
 
 .btn {
