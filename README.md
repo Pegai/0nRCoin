@@ -66,15 +66,16 @@ workflow'u bulunur. Kurulum adımları:
   kendi Helius/QuickNode/Alchemy gibi bir RPC sağlayıcınızın URL'sini
   `NETWORKS` içine eklemeniz önerilir.
 
-## Metadata (logo/açıklama) hakkında
+## Logo yükleme hakkında
 
-Token'ınızın logosunun ve açıklamasının cüzdanlarda/gezginlerde
-görünebilmesi için isim/sembol/görsel içeren bir JSON dosyasının IPFS veya
-Arweave gibi bir servise yüklenip linkinin "Metadata URI" alanına
-girilmesi gerekir (bu proje bir pinning servisi entegre etmez, dilerseniz
-kendi Pinata/NFT.Storage hesabınızla bu adımı ekleyebilirsiniz). Alan boş
-bırakılırsa token yine sorunsuz oluşturulur, sadece zincir dışı görsel/açıklama
-eklenmez.
+Formdaki "Logo" alanından bir görsel seçtiğinizde, token oluşturma
+işlemiyle birlikte görsel ve metadata JSON'u **Irys** (Arweave üzerine
+kalıcı yazan bir depolama ağı) üzerine yükleniyor — üçüncü taraf bir
+siteye üye olmaya, API anahtarı almaya gerek yok. Yükleme, bağlı
+Solana cüzdanınızdan ödenen küçük bir ücretle (genellikle bir SOL'un
+binde birinden az) gerçekleşir ve cüzdanınızda normal bir işlem olarak
+onaylamanız istenir. Görsel seçmezseniz token yine sorunsuz oluşturulur,
+sadece zincir dışı logo/açıklama eklenmez.
 
 ## Önemli uyarılar
 
@@ -91,3 +92,4 @@ eklenmez.
   [@solana/spl-token](https://github.com/solana-labs/solana-program-library)
 - [@solana/wallet-adapter](https://github.com/anza-xyz/wallet-adapter)
 - [@metaplex-foundation/mpl-token-metadata](https://github.com/metaplex-foundation/mpl-token-metadata)
+- [Irys](https://irys.xyz/) (logo/metadata için kalıcı depolama)

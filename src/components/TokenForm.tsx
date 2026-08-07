@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { createToken, type TokenFormData, type CreateTokenResult } from '../lib/createToken'
-import { uploadImageToPinata, uploadMetadataToPinata } from '../lib/pinata'
+import { uploadLogoAndMetadata } from '../lib/irys'
 import { DEFAULT_DECIMALS, FEE_WALLET, FEE_AMOUNT_SOL, type NetworkId } from '../config'
 import { ResultCard } from './ResultCard'
 
-const PINATA_JWT_STORAGE_KEY = '0nrcoin_pinata_jwt'
-const MAX_LOGO_BYTES = 5 * 1024 * 1024
+const MAX_LOGO_BYTES = 1 * 1024 * 1024
 
 const initialState: TokenFormData = {
   name: '',
@@ -39,9 +38,6 @@ export function TokenForm({ network }: Props) {
 
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string>('')
-  const [pinataJwt, setPinataJwt] = useState<string>(
-    () => localStorage.getItem(PINATA_JWT_STORAGE_KEY) || '',
-  )
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -66,20 +62,11 @@ export function TokenForm({ network }: Props) {
       return
     }
     if (file.size > MAX_LOGO_BYTES) {
-      setError('Logo dosyası 5MB\'tan küçük olmalıdır.')
+      setError('Logo dosyası 1MB\'tan küçük olmalıdır.')
       return
     }
     setError('')
     setLogoFile(file)
-  }
-
-  function handlePinataJwtChange(value: string) {
-    setPinataJwt(value)
-    if (value) {
-      localStorage.setItem(PINATA_JWT_STORAGE_KEY, value)
-    } else {
-      localStorage.removeItem(PINATA_JWT_STORAGE_KEY)
-    }
   }
 
   function validate(): string | null {
@@ -112,11 +99,9 @@ export function TokenForm({ network }: Props) {
     try {
       let imageUri = form.imageUri
 
-      if (logoFile && pinataJwt) {
-        setStatus('Logo IPFS\'e yükleniyor...')
-        const imageUrl = await uploadImageToPinata(logoFile, pinataJwt)
-        setStatus('Metadata IPFS\'e yükleniyor...')
-        imageUri = await uploadMetadataToPinata(
+      if (logoFile) {
+        imageUri = await uploadLogoAndMetadata(
+          logoFile,
           {
             name: form.name,
             symbol: form.symbol,
@@ -125,8 +110,9 @@ export function TokenForm({ network }: Props) {
             twitter: form.twitter,
             telegram: form.telegram,
           },
-          imageUrl,
-          pinataJwt,
+          wallet,
+          network,
+          setStatus,
         )
       }
 
@@ -227,7 +213,7 @@ export function TokenForm({ network }: Props) {
             <div className="logo-upload__placeholder">🖼️</div>
           )}
           <div className="logo-upload__text">
-            {logoFile ? logoFile.name : 'Görsel seçmek için tıklayın (PNG, JPG, SVG — max 5MB)'}
+            {logoFile ? logoFile.name : 'Görsel seçmek için tıklayın (PNG, JPG, SVG — max 1MB)'}
           </div>
         </div>
         <input
@@ -238,27 +224,11 @@ export function TokenForm({ network }: Props) {
           hidden
         />
 
-        <details className="pinata-settings">
-          <summary>IPFS Yükleme Anahtarı (opsiyonel, logoyu zincire bağlamak için gerekir)</summary>
-          <div className="field" style={{ marginTop: 10 }}>
-            <input
-              type="password"
-              placeholder="Pinata JWT anahtarınız"
-              value={pinataJwt}
-              onChange={(e) => handlePinataJwtChange(e.target.value)}
-            />
-            <small>
-              Logonuzun cüzdanlarda görünmesi için görsel IPFS'e yüklenmelidir — Solana zinciri
-              görseli doğrudan saklayamaz. Ücretsiz bir Pinata hesabı açıp ("API Keys" →
-              "New Key") aldığınız JWT anahtarını buraya yapıştırın:{' '}
-              <a href="https://app.pinata.cloud/developers/api-keys" target="_blank" rel="noreferrer">
-                app.pinata.cloud
-              </a>
-              . Anahtar sadece tarayıcınızda saklanır, bize gönderilmez. Boş bırakırsanız logo
-              yüklenmez, token yine sorunsuz oluşturulur.
-            </small>
-          </div>
-        </details>
+        <small>
+          Seçtiğiniz görsel, token oluşturma işlemiyle birlikte cüzdanınızdan onaylayacağınız küçük
+          bir ücret karşılığında kalıcı olarak ağa yazılır — üçüncü taraf bir siteye üye olmanıza
+          gerek yok. Boş bırakırsanız token yine sorunsuz oluşturulur, yalnızca logosuz olur.
+        </small>
       </div>
 
       <div className="form-grid">

@@ -303,21 +303,6 @@ body {
   color: var(--text-muted);
 }
 
-.pinata-settings {
-  margin-top: 10px;
-  font-size: 0.8rem;
-}
-
-.pinata-settings summary {
-  cursor: pointer;
-  color: var(--accent-b);
-  font-weight: 600;
-}
-
-.pinata-settings a {
-  color: var(--accent-b);
-}
-
 .authorities {
   border: 1px solid var(--panel-border);
   border-radius: 14px;
