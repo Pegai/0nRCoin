@@ -261,6 +261,63 @@ body {
   line-height: 1.5;
 }
 
+.logo-upload {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--panel-border);
+  border-radius: 10px;
+  padding: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.logo-upload:hover {
+  border-color: var(--accent-a);
+}
+
+.logo-upload__preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--panel);
+}
+
+.logo-upload__placeholder {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  flex-shrink: 0;
+}
+
+.logo-upload__text {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.pinata-settings {
+  margin-top: 10px;
+  font-size: 0.8rem;
+}
+
+.pinata-settings summary {
+  cursor: pointer;
+  color: var(--accent-b);
+  font-weight: 600;
+}
+
+.pinata-settings a {
+  color: var(--accent-b);
+}
+
 .authorities {
   border: 1px solid var(--panel-border);
   border-radius: 14px;

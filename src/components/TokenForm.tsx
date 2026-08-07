@@ -1,8 +1,12 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { createToken, type TokenFormData, type CreateTokenResult } from '../lib/createToken'
+import { uploadImageToPinata, uploadMetadataToPinata } from '../lib/pinata'
 import { DEFAULT_DECIMALS, FEE_WALLET, FEE_AMOUNT_SOL, type NetworkId } from '../config'
 import { ResultCard } from './ResultCard'
+
+const PINATA_JWT_STORAGE_KEY = '0nrcoin_pinata_jwt'
+const MAX_LOGO_BYTES = 5 * 1024 * 1024
 
 const initialState: TokenFormData = {
   name: '',
@@ -33,8 +37,49 @@ export function TokenForm({ network }: Props) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CreateTokenResult | null>(null)
 
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string>('')
+  const [pinataJwt, setPinataJwt] = useState<string>(
+    () => localStorage.getItem(PINATA_JWT_STORAGE_KEY) || '',
+  )
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!logoFile) {
+      setLogoPreview('')
+      return
+    }
+    const url = URL.createObjectURL(logoFile)
+    setLogoPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [logoFile])
+
   function update<K extends keyof TokenFormData>(key: K, value: TokenFormData[K]) {
     setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  function handleLogoChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setError('Lütfen bir görsel dosyası seçin (PNG, JPG, SVG...).')
+      return
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setError('Logo dosyası 5MB\'tan küçük olmalıdır.')
+      return
+    }
+    setError('')
+    setLogoFile(file)
+  }
+
+  function handlePinataJwtChange(value: string) {
+    setPinataJwt(value)
+    if (value) {
+      localStorage.setItem(PINATA_JWT_STORAGE_KEY, value)
+    } else {
+      localStorage.removeItem(PINATA_JWT_STORAGE_KEY)
+    }
   }
 
   function validate(): string | null {
@@ -65,7 +110,27 @@ export function TokenForm({ network }: Props) {
 
     setLoading(true)
     try {
-      const res = await createToken(connection, wallet, form, setStatus)
+      let imageUri = form.imageUri
+
+      if (logoFile && pinataJwt) {
+        setStatus('Logo IPFS\'e yükleniyor...')
+        const imageUrl = await uploadImageToPinata(logoFile, pinataJwt)
+        setStatus('Metadata IPFS\'e yükleniyor...')
+        imageUri = await uploadMetadataToPinata(
+          {
+            name: form.name,
+            symbol: form.symbol,
+            description: form.description,
+            website: form.website,
+            twitter: form.twitter,
+            telegram: form.telegram,
+          },
+          imageUrl,
+          pinataJwt,
+        )
+      }
+
+      const res = await createToken(connection, wallet, { ...form, imageUri }, setStatus)
       setResult(res)
       setStatus('')
     } catch (err) {
@@ -153,20 +218,48 @@ export function TokenForm({ network }: Props) {
         />
       </label>
 
-      <label className="field">
-        <span>Metadata / Logo URI (opsiyonel)</span>
+      <div className="field">
+        <span>Logo</span>
+        <div className="logo-upload" onClick={() => fileInputRef.current?.click()}>
+          {logoPreview ? (
+            <img src={logoPreview} alt="Logo önizleme" className="logo-upload__preview" />
+          ) : (
+            <div className="logo-upload__placeholder">🖼️</div>
+          )}
+          <div className="logo-upload__text">
+            {logoFile ? logoFile.name : 'Görsel seçmek için tıklayın (PNG, JPG, SVG — max 5MB)'}
+          </div>
+        </div>
         <input
-          type="text"
-          placeholder="https://... (IPFS/Arweave üzerinde barındırılan metadata.json linki)"
-          value={form.imageUri}
-          onChange={(e) => update('imageUri', e.target.value)}
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleLogoChange}
+          hidden
         />
-        <small>
-          Logo ve açıklamanın cüzdanlarda görünmesi için isim/sembol/görsel içeren bir JSON dosyasını
-          IPFS veya Arweave gibi bir servise yükleyip linkini buraya yapıştırabilirsiniz. Boş
-          bırakırsanız token yine oluşturulur, yalnızca zincir dışı metadata eklenmez.
-        </small>
-      </label>
+
+        <details className="pinata-settings">
+          <summary>IPFS Yükleme Anahtarı (opsiyonel, logoyu zincire bağlamak için gerekir)</summary>
+          <div className="field" style={{ marginTop: 10 }}>
+            <input
+              type="password"
+              placeholder="Pinata JWT anahtarınız"
+              value={pinataJwt}
+              onChange={(e) => handlePinataJwtChange(e.target.value)}
+            />
+            <small>
+              Logonuzun cüzdanlarda görünmesi için görsel IPFS'e yüklenmelidir — Solana zinciri
+              görseli doğrudan saklayamaz. Ücretsiz bir Pinata hesabı açıp ("API Keys" →
+              "New Key") aldığınız JWT anahtarını buraya yapıştırın:{' '}
+              <a href="https://app.pinata.cloud/developers/api-keys" target="_blank" rel="noreferrer">
+                app.pinata.cloud
+              </a>
+              . Anahtar sadece tarayıcınızda saklanır, bize gönderilmez. Boş bırakırsanız logo
+              yüklenmez, token yine sorunsuz oluşturulur.
+            </small>
+          </div>
+        </details>
+      </div>
 
       <div className="form-grid">
         <label className="field">
