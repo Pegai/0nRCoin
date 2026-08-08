@@ -31,19 +31,47 @@ async function getIrysUploader(wallet: WalletContextState, network: NetworkId) {
   return builder
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Devnet'te, Irys'in bundler node'u gönderdiğiniz SOL'u zincirde bazen
+// birkaç saniye geç görebiliyor ve ilk denemede "confirmed tx not found"
+// hatası verebiliyor — SOL genelde gönderilmiş oluyor, sadece onay
+// gecikiyor. Bu yüzden bakiyeyi tekrar kontrol ederek birkaç kez deniyoruz.
 async function ensureFunded(
   irys: Awaited<ReturnType<typeof getIrysUploader>>,
   bytes: number,
   onStatus?: (status: string) => void,
 ) {
   const price = await irys.getPrice(bytes)
-  const balance = await irys.getLoadedBalance()
+  let balance = await irys.getLoadedBalance()
+  if (!price.isGreaterThan(balance)) return
 
-  if (price.isGreaterThan(balance)) {
-    onStatus?.('Depolama ücreti için cüzdanınızda onay bekleniyor...')
-    const topUp = price.minus(balance).multipliedBy(1.15).integerValue()
-    await irys.fund(topUp)
+  onStatus?.('Depolama ücreti için cüzdanınızda onay bekleniyor...')
+  const topUp = price.minus(balance).multipliedBy(1.15).integerValue()
+
+  const maxAttempts = 3
+  let lastError: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await irys.fund(topUp)
+      return
+    } catch (err) {
+      lastError = err
+      if (attempt < maxAttempts) {
+        onStatus?.(`Ağ yanıt vermedi, tekrar deneniyor (${attempt}/${maxAttempts})...`)
+        await sleep(4000 * attempt)
+        balance = await irys.getLoadedBalance()
+        if (!price.isGreaterThan(balance)) return
+      }
+    }
   }
+  throw new Error(
+    lastError instanceof Error
+      ? `Depolama ücreti gönderilemedi (ağ zaman aşımı): ${lastError.message}`
+      : 'Depolama ücreti gönderilemedi (ağ zaman aşımı). Lütfen tekrar deneyin.',
+  )
 }
 
 export async function uploadLogoAndMetadata(
