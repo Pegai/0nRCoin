@@ -2,10 +2,14 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { createToken, type TokenFormData, type CreateTokenResult } from '../lib/createToken'
 import { uploadLogoAndMetadata } from '../lib/irys'
+import { resizeImageFile } from '../lib/image'
 import { DEFAULT_DECIMALS, FEE_WALLET, FEE_AMOUNT_SOL, type NetworkId } from '../config'
 import { ResultCard } from './ResultCard'
 
-const MAX_LOGO_BYTES = 1 * 1024 * 1024
+// Seçilen dosyanın ham (işlenmemiş) boyutu için üst sınır — asıl yüklenen
+// dosya bundan çok daha küçük olacak çünkü aşağıda otomatik olarak
+// küçültülüp yeniden sıkıştırılıyor (bkz. src/lib/image.ts).
+const MAX_RAW_LOGO_BYTES = 15 * 1024 * 1024
 
 const initialState: TokenFormData = {
   name: '',
@@ -55,19 +59,36 @@ export function TokenForm({ network }: Props) {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
-  function handleLogoChange(e: ChangeEvent<HTMLInputElement>) {
+  async function handleLogoChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
     if (!file.type.startsWith('image/')) {
       setError('Lütfen bir görsel dosyası seçin (PNG, JPG, SVG...).')
       return
     }
-    if (file.size > MAX_LOGO_BYTES) {
-      setError('Logo dosyası 1MB\'tan küçük olmalıdır.')
+    if (file.size > MAX_RAW_LOGO_BYTES) {
+      setError('Logo dosyası 15MB\'tan küçük olmalıdır.')
       return
     }
     setError('')
-    setLogoFile(file)
+    setStatus('Logo hazırlanıyor (küçültülüyor)...')
+    try {
+      // Yükleme hızını ve güvenilirliğini artırmak için görseli küçük bir
+      // logo boyutuna indirip yeniden sıkıştırıyoruz — orijinal fotoğraf
+      // boyutu ağa hiç gitmiyor.
+      const resized = await resizeImageFile(file)
+      setLogoFile(resized)
+    } catch (err) {
+      console.error('Logo küçültme hatası:', err)
+      if (file.size <= 300 * 1024) {
+        // Küçültme başarısız oldu ama dosya zaten küçük, olduğu gibi kullanılabilir.
+        setLogoFile(file)
+      } else {
+        setError('Görsel işlenemedi. Lütfen daha küçük/basit bir görsel deneyin.')
+      }
+    } finally {
+      setStatus('')
+    }
   }
 
   function validate(): string | null {
@@ -230,7 +251,7 @@ export function TokenForm({ network }: Props) {
             <div className="logo-upload__placeholder">🖼️</div>
           )}
           <div className="logo-upload__text">
-            {logoFile ? logoFile.name : 'Görsel seçmek için tıklayın (PNG, JPG, SVG — max 1MB)'}
+            {logoFile ? logoFile.name : 'Görsel seçmek için tıklayın (herhangi bir boyutta olabilir, otomatik küçültülür)'}
           </div>
         </div>
         <input
