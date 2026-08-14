@@ -134,6 +134,7 @@ export function TokenForm({ network }: Props) {
               twitter: form.twitter,
               telegram: form.telegram,
             },
+            connection,
             wallet,
             network,
             setStatus,

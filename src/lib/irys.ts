@@ -1,6 +1,8 @@
 import { WebUploader } from '@irys/web-upload'
 import { WebSolana } from '@irys/web-upload-solana'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
+import type { Connection } from '@solana/web3.js'
+import { LAMPORTS_PER_SOL } from '@solana/web3.js'
 import { NETWORKS, type NetworkId } from '../config'
 
 // Logoyu ve metadata JSON'unu üçüncü taraf bir hesap/servise ihtiyaç
@@ -23,6 +25,12 @@ export interface OnChainMetadataInput {
 // önceden tam bilemesek de birkaç yüz bayttan büyük olmaz; ücreti tek
 // seferde ve fazlasıyla karşılayacak cömert bir tampon payı bırakıyoruz.
 const METADATA_JSON_BUFFER_BYTES = 2048
+// İşlem ücreti + hesap kirası için ayrılan tampon (lamports).
+const WALLET_FEE_BUFFER_LAMPORTS = 20_000
+
+function sol(lamports: number | string): string {
+  return (Number(lamports) / LAMPORTS_PER_SOL).toFixed(6)
+}
 
 async function getIrysUploader(wallet: WalletContextState, network: NetworkId) {
   const builder = WebUploader(WebSolana)
@@ -60,33 +68,56 @@ function sleep(ms: number) {
 // (toplam 2 cüzdan onayı) deniyoruz.
 async function ensureFunded(
   irys: Awaited<ReturnType<typeof getIrysUploader>>,
+  connection: Connection,
+  walletPubkey: import('@solana/web3.js').PublicKey,
   bytes: number,
   onStatus?: (status: string) => void,
 ) {
   const price = await irys.getPrice(bytes)
   let balance = await irys.getLoadedBalance()
-  if (!price.isGreaterThan(balance)) return
+  if (!price.isGreaterThan(balance)) {
+    onStatus?.('Depolama ücreti zaten karşılanmış, yüklemeye geçiliyor...')
+    return
+  }
 
-  onStatus?.('Depolama ücreti için cüzdanınızda onay bekleniyor...')
   let topUp = price.minus(balance).multipliedBy(1.15).integerValue()
 
+  // Cüzdanda gerçekten bu kadar SOL var mı? Yoksa cüzdan zaten
+  // "yetersiz bakiye" diyerek işlemi reddedecek — bunu önceden
+  // tespit edip anlaşılır bir mesaj vermek, gizemli bir ağ hatası
+  // beklemekten çok daha iyi.
+  const walletLamports = await connection.getBalance(walletPubkey)
+  const needed = topUp.toNumber() + WALLET_FEE_BUFFER_LAMPORTS
+  if (walletLamports < needed) {
+    throw new Error(
+      `cüzdanınızda yeterli SOL yok (gerekli: ~${sol(needed)} SOL, mevcut: ${sol(walletLamports)} SOL). ` +
+        'Devnet\'te faucet.solana.com üzerinden ücretsiz SOL alabilirsiniz.',
+    )
+  }
+
+  onStatus?.(`Depolama ücreti (~${sol(topUp.toNumber())} SOL) için cüzdanınızda onay bekleniyor...`)
   let lastError: unknown
   try {
     await irys.fund(topUp)
+    onStatus?.('Depolama ücreti onaylandı.')
     return
   } catch (err) {
     lastError = err
   }
 
-  onStatus?.('Ağ yanıt vermedi, birkaç saniye bekleniyor...')
+  onStatus?.('Depolama ağı yanıt vermedi, birkaç saniye bekleniyor (yeni işlem gönderilmiyor)...')
   await sleep(8000)
   balance = await irys.getLoadedBalance()
-  if (!price.isGreaterThan(balance)) return
+  if (!price.isGreaterThan(balance)) {
+    onStatus?.('Ücret bu arada onaylanmış, devam ediliyor...')
+    return
+  }
 
   onStatus?.('Cüzdanınızda bir onay isteği daha görünecek...')
   try {
     topUp = price.minus(balance).multipliedBy(1.15).integerValue()
     await irys.fund(topUp)
+    onStatus?.('Depolama ücreti onaylandı.')
     return
   } catch (err) {
     lastError = err
@@ -102,11 +133,16 @@ async function ensureFunded(
 export async function uploadLogoAndMetadata(
   file: File,
   input: OnChainMetadataInput,
+  connection: Connection,
   wallet: WalletContextState,
   network: NetworkId,
   onStatus?: (status: string) => void,
 ): Promise<string> {
-  onStatus?.('Ağa bağlanılıyor...')
+  if (!wallet.publicKey) {
+    throw new Error('cüzdan bağlı değil')
+  }
+
+  onStatus?.('Depolama ağına bağlanılıyor...')
   let irys: Awaited<ReturnType<typeof getIrysUploader>>
   try {
     irys = await getIrysUploader(wallet, network)
@@ -119,14 +155,20 @@ export async function uploadLogoAndMetadata(
   // ayrı bir cüzdan onayı ve onay bekleme süresi yaşamak yerine, tüm
   // yükleme boyunca en fazla bir kez (gerekirse bir kez daha) ücret
   // gönderiyoruz.
-  onStatus?.('Bakiye kontrol ediliyor...')
+  onStatus?.('Depolama ücreti hesaplanıyor...')
   try {
-    await ensureFunded(irys, file.size + METADATA_JSON_BUFFER_BYTES, onStatus)
+    await ensureFunded(
+      irys,
+      connection,
+      wallet.publicKey,
+      file.size + METADATA_JSON_BUFFER_BYTES,
+      onStatus,
+    )
   } catch (err) {
     throw stageError('Depolama ücreti gönderilemedi', err)
   }
 
-  onStatus?.('Logo kalıcı olarak ağa yükleniyor...')
+  onStatus?.(`Logo (${(file.size / 1024).toFixed(0)} KB) kalıcı olarak ağa yükleniyor...`)
   let imageReceipt: Awaited<ReturnType<typeof irys.uploadFile>>
   try {
     imageReceipt = await irys.uploadFile(file)
@@ -134,6 +176,7 @@ export async function uploadLogoAndMetadata(
     throw stageError('Logo yüklenemedi', err)
   }
   const imageUrl = `https://gateway.irys.xyz/${imageReceipt.id}`
+  onStatus?.('Logo yüklendi, metadata hazırlanıyor...')
 
   const metadataJson = {
     name: input.name,
@@ -159,6 +202,7 @@ export async function uploadLogoAndMetadata(
   onStatus?.('Metadata kalıcı olarak ağa yükleniyor...')
   try {
     const metadataReceipt = await irys.uploadFile(metadataFile)
+    onStatus?.('Metadata yüklendi.')
     return `https://gateway.irys.xyz/${metadataReceipt.id}`
   } catch (err) {
     throw stageError('Metadata yüklenemedi', err)
