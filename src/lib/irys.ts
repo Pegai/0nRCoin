@@ -51,7 +51,7 @@ async function ensureFunded(
   onStatus?.('Depolama ücreti için cüzdanınızda onay bekleniyor...')
   const topUp = price.minus(balance).multipliedBy(1.15).integerValue()
 
-  const maxAttempts = 3
+  const maxAttempts = 4
   let lastError: unknown
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -61,7 +61,7 @@ async function ensureFunded(
       lastError = err
       if (attempt < maxAttempts) {
         onStatus?.(`Ağ yanıt vermedi, tekrar deneniyor (${attempt}/${maxAttempts})...`)
-        await sleep(4000 * attempt)
+        await sleep(5000 * attempt)
         balance = await irys.getLoadedBalance()
         if (!price.isGreaterThan(balance)) return
       }
@@ -69,8 +69,8 @@ async function ensureFunded(
   }
   throw new Error(
     lastError instanceof Error
-      ? `Depolama ücreti gönderilemedi (ağ zaman aşımı): ${lastError.message}`
-      : 'Depolama ücreti gönderilemedi (ağ zaman aşımı). Lütfen tekrar deneyin.',
+      ? `depolama ücreti gönderilemedi (ağ zaman aşımı) — ${lastError.message}`
+      : 'depolama ücreti gönderilemedi (ağ zaman aşımı)',
   )
 }
 
@@ -82,13 +82,27 @@ export async function uploadLogoAndMetadata(
   onStatus?: (status: string) => void,
 ): Promise<string> {
   onStatus?.('Ağa bağlanılıyor...')
-  const irys = await getIrysUploader(wallet, network)
+  let irys: Awaited<ReturnType<typeof getIrysUploader>>
+  try {
+    irys = await getIrysUploader(wallet, network)
+  } catch (err) {
+    throw stageError('Ağa bağlanılamadı', err)
+  }
 
   onStatus?.('Logo için bakiye kontrol ediliyor...')
-  await ensureFunded(irys, file.size, onStatus)
+  try {
+    await ensureFunded(irys, file.size, onStatus)
+  } catch (err) {
+    throw stageError('Logo ücreti gönderilemedi', err)
+  }
 
   onStatus?.('Logo kalıcı olarak ağa yükleniyor...')
-  const imageReceipt = await irys.uploadFile(file)
+  let imageReceipt: Awaited<ReturnType<typeof irys.uploadFile>>
+  try {
+    imageReceipt = await irys.uploadFile(file)
+  } catch (err) {
+    throw stageError('Logo yüklenemedi', err)
+  }
   const imageUrl = `https://gateway.irys.xyz/${imageReceipt.id}`
 
   const metadataJson = {
@@ -113,10 +127,22 @@ export async function uploadLogoAndMetadata(
   })
 
   onStatus?.('Metadata için bakiye kontrol ediliyor...')
-  await ensureFunded(irys, metadataBytes.byteLength, onStatus)
+  try {
+    await ensureFunded(irys, metadataBytes.byteLength, onStatus)
+  } catch (err) {
+    throw stageError('Metadata ücreti gönderilemedi', err)
+  }
 
   onStatus?.('Metadata kalıcı olarak ağa yükleniyor...')
-  const metadataReceipt = await irys.uploadFile(metadataFile)
+  try {
+    const metadataReceipt = await irys.uploadFile(metadataFile)
+    return `https://gateway.irys.xyz/${metadataReceipt.id}`
+  } catch (err) {
+    throw stageError('Metadata yüklenemedi', err)
+  }
+}
 
-  return `https://gateway.irys.xyz/${metadataReceipt.id}`
+function stageError(prefix: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err)
+  return new Error(`${prefix}: ${detail}`)
 }

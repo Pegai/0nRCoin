@@ -33,6 +33,7 @@ export function TokenForm({ network }: Props) {
   const [form, setForm] = useState<TokenFormData>(initialState)
   const [status, setStatus] = useState<string>('')
   const [error, setError] = useState<string>('')
+  const [logoWarning, setLogoWarning] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CreateTokenResult | null>(null)
 
@@ -82,6 +83,7 @@ export function TokenForm({ network }: Props) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError('')
+    setLogoWarning('')
     setResult(null)
 
     if (!wallet.connected || !wallet.publicKey) {
@@ -100,20 +102,31 @@ export function TokenForm({ network }: Props) {
       let imageUri = form.imageUri
 
       if (logoFile) {
-        imageUri = await uploadLogoAndMetadata(
-          logoFile,
-          {
-            name: form.name,
-            symbol: form.symbol,
-            description: form.description,
-            website: form.website,
-            twitter: form.twitter,
-            telegram: form.telegram,
-          },
-          wallet,
-          network,
-          setStatus,
-        )
+        try {
+          imageUri = await uploadLogoAndMetadata(
+            logoFile,
+            {
+              name: form.name,
+              symbol: form.symbol,
+              description: form.description,
+              website: form.website,
+              twitter: form.twitter,
+              telegram: form.telegram,
+            },
+            wallet,
+            network,
+            setStatus,
+          )
+        } catch (logoErr) {
+          // Logo yükleme başarısız olsa bile token oluşturmayı engellemiyoruz —
+          // kullanıcı yine de token'ını alsın, logoyu sonra ekleyebilir.
+          console.error('Logo yükleme hatası:', logoErr)
+          setLogoWarning(
+            logoErr instanceof Error
+              ? `Logo yüklenemedi, token logosuz oluşturulacak: ${logoErr.message}`
+              : 'Logo yüklenemedi, token logosuz oluşturulacak.',
+          )
+        }
       }
 
       const res = await createToken(connection, wallet, { ...form, imageUri }, setStatus)
@@ -130,14 +143,18 @@ export function TokenForm({ network }: Props) {
 
   if (result) {
     return (
-      <ResultCard
-        result={result}
-        network={network}
-        onReset={() => {
-          setResult(null)
-          setForm(initialState)
-        }}
-      />
+      <>
+        {logoWarning && <div className="alert alert--warning">{logoWarning}</div>}
+        <ResultCard
+          result={result}
+          network={network}
+          onReset={() => {
+            setResult(null)
+            setLogoWarning('')
+            setForm(initialState)
+          }}
+        />
+      </>
     )
   }
 
@@ -309,6 +326,7 @@ export function TokenForm({ network }: Props) {
       )}
 
       {error && <div className="alert alert--error">{error}</div>}
+      {logoWarning && !error && <div className="alert alert--warning">{logoWarning}</div>}
       {status && !error && <div className="alert alert--info">{status}</div>}
 
       <button type="submit" className="btn btn--primary btn--block" disabled={loading}>
