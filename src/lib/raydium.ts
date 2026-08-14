@@ -12,7 +12,12 @@ import {
   type ApiV3Token,
 } from '@raydium-io/raydium-sdk-v2'
 import { Connection, PublicKey } from '@solana/web3.js'
-import { getMint, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token'
+import {
+  getAssociatedTokenAddressSync,
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token'
 import BN from 'bn.js'
 import Decimal from 'decimal.js'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
@@ -44,6 +49,29 @@ export async function getMintInfo(connection: Connection, mintAddress: string): 
     address: mintAddress,
     decimals: mint.decimals,
     programId: programId.toBase58(),
+  }
+}
+
+// Cüzdanın bir token'dan (ör. LP token'ı ya da havuzun A tarafı) ne kadar
+// tuttuğunu okur. Hesap hiç oluşmamışsa (yani bakiye "0" ise) hata
+// fırlatmak yerine 0 döner.
+export async function getWalletTokenBalance(
+  connection: Connection,
+  owner: PublicKey,
+  mintAddress: string,
+  programId: string,
+): Promise<number> {
+  try {
+    const ata = getAssociatedTokenAddressSync(
+      new PublicKey(mintAddress),
+      owner,
+      false,
+      new PublicKey(programId),
+    )
+    const balance = await connection.getTokenAccountBalance(ata)
+    return balance.value.uiAmount ?? 0
+  } catch {
+    return 0
   }
 }
 

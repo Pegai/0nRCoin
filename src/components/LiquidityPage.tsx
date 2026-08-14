@@ -7,6 +7,7 @@ import {
   createCpmmPool,
   getMintInfo,
   getPoolById,
+  getWalletTokenBalance,
   loadRaydium,
   searchPoolsByMint,
   withdrawCpmmLiquidity,
@@ -390,17 +391,30 @@ function PoolManage({
   const [poolKeys, setPoolKeys] = useState<CpmmKeys | undefined>(undefined)
   const [loadingPool, setLoadingPool] = useState(false)
   const [addAmount, setAddAmount] = useState('')
-  const [withdrawAmount, setWithdrawAmount] = useState('')
+  const [withdrawPercent, setWithdrawPercent] = useState(0)
+  const [lpBalance, setLpBalance] = useState(0)
+  const [tokenABalance, setTokenABalance] = useState(0)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [txResult, setTxResult] = useState('')
+
+  async function refreshBalances(pool: ApiV3PoolInfoStandardItemCpmm) {
+    if (!wallet.publicKey) return
+    const [lp, tokenA] = await Promise.all([
+      getWalletTokenBalance(connection, wallet.publicKey, pool.lpMint.address, pool.lpMint.programId),
+      getWalletTokenBalance(connection, wallet.publicKey, pool.mintA.address, pool.mintA.programId),
+    ])
+    setLpBalance(lp)
+    setTokenABalance(tokenA)
+  }
 
   async function handleLoadPool(e: FormEvent) {
     e.preventDefault()
     setError('')
     setTxResult('')
     setPoolInfo(null)
+    setWithdrawPercent(0)
     if (!poolId.trim()) {
       setError('Havuz ID girin.')
       return
@@ -411,6 +425,7 @@ function PoolManage({
       const { poolInfo, poolKeys } = await getPoolById(raydium, poolId.trim(), network)
       setPoolInfo(poolInfo)
       setPoolKeys(poolKeys)
+      await refreshBalances(poolInfo)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Havuz bulunamadı.')
@@ -438,6 +453,7 @@ function PoolManage({
       setTxResult(txId)
       setStatus('')
       setAddAmount('')
+      await refreshBalances(poolInfo)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Likidite eklenirken bir hata oluştu.')
@@ -447,6 +463,14 @@ function PoolManage({
     }
   }
 
+  const withdrawLpAmount = (lpBalance * withdrawPercent) / 100
+  const withdrawEstimatedA = poolInfo?.lpAmount
+    ? (withdrawLpAmount / poolInfo.lpAmount) * poolInfo.mintAmountA
+    : 0
+  const withdrawEstimatedB = poolInfo?.lpAmount
+    ? (withdrawLpAmount / poolInfo.lpAmount) * poolInfo.mintAmountB
+    : 0
+
   async function handleWithdraw() {
     if (!poolInfo) return
     setError('')
@@ -455,17 +479,24 @@ function PoolManage({
       setError('Devam etmek için önce cüzdanınızı bağlayın.')
       return
     }
-    if (!withdrawAmount || Number(withdrawAmount) <= 0) {
-      setError('Geçerli bir LP token miktarı girin.')
+    if (withdrawLpAmount <= 0) {
+      setError('Çekmek için yüzde belirleyin (bakiyeniz 0 olabilir).')
       return
     }
     setBusy(true)
     try {
       const raydium = await loadRaydium(connection, wallet, network)
-      const txId = await withdrawCpmmLiquidity(raydium, poolInfo, poolKeys, withdrawAmount, setStatus)
+      const txId = await withdrawCpmmLiquidity(
+        raydium,
+        poolInfo,
+        poolKeys,
+        withdrawLpAmount.toString(),
+        setStatus,
+      )
       setTxResult(txId)
       setStatus('')
-      setWithdrawAmount('')
+      setWithdrawPercent(0)
+      await refreshBalances(poolInfo)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Likidite çekilirken bir hata oluştu.')
@@ -520,25 +551,102 @@ function PoolManage({
             </span>
           </div>
 
-          <div className="form-grid" style={{ marginTop: 16 }}>
+          <hr className="pool-manage__divider" />
+
+          <div className="pool-manage__section">
+            <div className="pool-manage__section-title">Likidite Ekle</div>
             <label className="field">
-              <span>Eklenecek {poolInfo.mintA.symbol} Miktarı</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={addAmount}
-                onChange={(e) => setAddAmount(e.target.value.replace(/[^\d.]/g, ''))}
-              />
+              <span>
+                Eklenecek {poolInfo.mintA.symbol} Miktarı
+                <small className="pool-manage__balance-hint">
+                  {' '}
+                  (bakiyeniz: {fmtNum(tokenABalance, 6)} {poolInfo.mintA.symbol})
+                </small>
+              </span>
+              <div className="pool-manage__amount-row">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={addAmount}
+                  onChange={(e) => setAddAmount(e.target.value.replace(/[^\d.]/g, ''))}
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary pool-manage__max-btn"
+                  onClick={() => setAddAmount(String(tokenABalance))}
+                  disabled={tokenABalance <= 0}
+                >
+                  MAX
+                </button>
+              </div>
             </label>
-            <label className="field">
-              <span>Çekilecek LP Token Miktarı</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={withdrawAmount}
-                onChange={(e) => setWithdrawAmount(e.target.value.replace(/[^\d.]/g, ''))}
-              />
-            </label>
+            {addAmount && Number(addAmount) > 0 && (
+              <small className="pool-manage__preview">
+                ≈ {fmtNum(Number(addAmount) * poolInfo.price)} {poolInfo.mintB.symbol} eşleşecek
+                (kesin miktar işlem sırasında hesaplanır)
+              </small>
+            )}
+            <button
+              type="button"
+              className="btn btn--primary pool-manage__action-btn"
+              onClick={handleAdd}
+              disabled={busy}
+            >
+              {busy ? 'İşleniyor...' : 'Likidite Ekle'}
+            </button>
+          </div>
+
+          <hr className="pool-manage__divider" />
+
+          <div className="pool-manage__section">
+            <div className="pool-manage__section-title">
+              Likidite Çek
+              <small className="pool-manage__balance-hint">
+                {' '}
+                (LP bakiyeniz: {fmtNum(lpBalance, 6)})
+              </small>
+            </div>
+
+            <div className="pool-manage__percent-display">%{withdrawPercent}</div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={withdrawPercent}
+              onChange={(e) => setWithdrawPercent(Number(e.target.value))}
+              className="pool-manage__slider"
+              disabled={lpBalance <= 0}
+            />
+            <div className="pool-manage__percent-buttons">
+              {[25, 50, 75, 100].map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  className="btn btn--secondary pool-manage__percent-btn"
+                  onClick={() => setWithdrawPercent(pct)}
+                  disabled={lpBalance <= 0}
+                >
+                  %{pct}
+                </button>
+              ))}
+            </div>
+
+            {withdrawPercent > 0 && (
+              <small className="pool-manage__preview">
+                Çekilecek: {fmtNum(withdrawLpAmount, 6)} LP ≈ {fmtNum(withdrawEstimatedA, 4)}{' '}
+                {poolInfo.mintA.symbol} + {fmtNum(withdrawEstimatedB, 4)} {poolInfo.mintB.symbol}
+              </small>
+            )}
+
+            <button
+              type="button"
+              className="btn btn--secondary pool-manage__action-btn"
+              onClick={handleWithdraw}
+              disabled={busy || lpBalance <= 0}
+            >
+              {busy ? 'İşleniyor...' : 'Likidite Çek'}
+            </button>
           </div>
 
           {status && <div className="alert alert--info">{status}</div>}
@@ -547,15 +655,6 @@ function PoolManage({
               İşlem başarılı: <code>{txResult}</code>
             </div>
           )}
-
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn--primary" onClick={handleAdd} disabled={busy}>
-              {busy ? 'İşleniyor...' : 'Likidite Ekle'}
-            </button>
-            <button type="button" className="btn btn--secondary" onClick={handleWithdraw} disabled={busy}>
-              {busy ? 'İşleniyor...' : 'Likidite Çek'}
-            </button>
-          </div>
         </div>
       )}
     </div>
