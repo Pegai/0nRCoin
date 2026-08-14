@@ -19,16 +19,30 @@ export interface OnChainMetadataInput {
   telegram: string
 }
 
+// Metadata JSON'unun (image URL'i doldurulduktan sonra) gerçek boyutunu
+// önceden tam bilemesek de birkaç yüz bayttan büyük olmaz; ücreti tek
+// seferde ve fazlasıyla karşılayacak cömert bir tampon payı bırakıyoruz.
+const METADATA_JSON_BUFFER_BYTES = 2048
+
 async function getIrysUploader(wallet: WalletContextState, network: NetworkId) {
   const builder = WebUploader(WebSolana)
     .withProvider(wallet)
     .withRpc(NETWORKS[network].endpoint)
+    // Irys varsayılan olarak "finalized" onayını bekliyor; bu Solana'da
+    // "confirmed"a göre çok daha yavaş (bazen 15-30+ sn) ve iç zaman
+    // aşımı süresini (30 sn) çoğu zaman aşıp gereksiz yere başarısız
+    // oluyordu. "confirmed" çok daha hızlı ve pratikte aynı derecede
+    // güvenilir.
+    .withTokenOptions({ finality: 'confirmed' })
 
   if (network === 'devnet') {
     builder.devnet()
   }
 
-  return builder
+  // UploadBuilder "thenable"dır (await edildiğinde .build() çalışır ve
+  // gerçek getPrice/fund/uploadFile metodlarına sahip Irys örneğini
+  // döndürür) — bu yüzden burada açıkça await ediyoruz.
+  return await builder
 }
 
 function sleep(ms: number) {
@@ -65,7 +79,7 @@ async function ensureFunded(
   }
 
   onStatus?.('Ağ yanıt vermedi, birkaç saniye bekleniyor...')
-  await sleep(15000)
+  await sleep(8000)
   balance = await irys.getLoadedBalance()
   if (!price.isGreaterThan(balance)) return
 
@@ -100,11 +114,16 @@ export async function uploadLogoAndMetadata(
     throw stageError('Ağa bağlanılamadı', err)
   }
 
-  onStatus?.('Logo için bakiye kontrol ediliyor...')
+  // Logo + metadata JSON için gereken ücreti TEK seferde önceden
+  // karşılıyoruz. Böylece ayrı ayrı iki kez ücret gönderip her birinde
+  // ayrı bir cüzdan onayı ve onay bekleme süresi yaşamak yerine, tüm
+  // yükleme boyunca en fazla bir kez (gerekirse bir kez daha) ücret
+  // gönderiyoruz.
+  onStatus?.('Bakiye kontrol ediliyor...')
   try {
-    await ensureFunded(irys, file.size, onStatus)
+    await ensureFunded(irys, file.size + METADATA_JSON_BUFFER_BYTES, onStatus)
   } catch (err) {
-    throw stageError('Logo ücreti gönderilemedi', err)
+    throw stageError('Depolama ücreti gönderilemedi', err)
   }
 
   onStatus?.('Logo kalıcı olarak ağa yükleniyor...')
@@ -136,13 +155,6 @@ export async function uploadLogoAndMetadata(
   const metadataFile = new File([metadataBytes], 'metadata.json', {
     type: 'application/json',
   })
-
-  onStatus?.('Metadata için bakiye kontrol ediliyor...')
-  try {
-    await ensureFunded(irys, metadataBytes.byteLength, onStatus)
-  } catch (err) {
-    throw stageError('Metadata ücreti gönderilemedi', err)
-  }
 
   onStatus?.('Metadata kalıcı olarak ağa yükleniyor...')
   try {
