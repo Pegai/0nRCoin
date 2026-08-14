@@ -35,10 +35,15 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-// Devnet'te, Irys'in bundler node'u gönderdiğiniz SOL'u zincirde bazen
-// birkaç saniye geç görebiliyor ve ilk denemede "confirmed tx not found"
-// hatası verebiliyor — SOL genelde gönderilmiş oluyor, sadece onay
-// gecikiyor. Bu yüzden bakiyeyi tekrar kontrol ederek birkaç kez deniyoruz.
+// ÖNEMLİ: irys.fund() her çağrıldığında YENİ bir SOL transferi oluşturur ve
+// cüzdanda YENİ bir onay ister — bu yüzden burada "başarısız oldu, tekrar
+// dene" mantığını fund()'ı tekrar tekrar çağırarak kurmuyoruz (bu, arka
+// arkaya birden fazla cüzdan onayı istemesine ve dakikalarca sürmesine
+// sebep olurdu). Bunun yerine: ilk denemeden sonra hiçbir yeni işlem
+// göndermeden bakiyenin güncellenip güncellenmediğini kontrol ediyoruz
+// (SOL çoğu zaman gönderilmiş oluyor, sadece Irys'in onu görmesi
+// gecikiyor); yalnızca bakiye hâlâ yetersizse EN FAZLA bir kez daha
+// (toplam 2 cüzdan onayı) deniyoruz.
 async function ensureFunded(
   irys: Awaited<ReturnType<typeof getIrysUploader>>,
   bytes: number,
@@ -49,28 +54,34 @@ async function ensureFunded(
   if (!price.isGreaterThan(balance)) return
 
   onStatus?.('Depolama ücreti için cüzdanınızda onay bekleniyor...')
-  const topUp = price.minus(balance).multipliedBy(1.15).integerValue()
+  let topUp = price.minus(balance).multipliedBy(1.15).integerValue()
 
-  const maxAttempts = 4
   let lastError: unknown
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await irys.fund(topUp)
-      return
-    } catch (err) {
-      lastError = err
-      if (attempt < maxAttempts) {
-        onStatus?.(`Ağ yanıt vermedi, tekrar deneniyor (${attempt}/${maxAttempts})...`)
-        await sleep(5000 * attempt)
-        balance = await irys.getLoadedBalance()
-        if (!price.isGreaterThan(balance)) return
-      }
-    }
+  try {
+    await irys.fund(topUp)
+    return
+  } catch (err) {
+    lastError = err
   }
+
+  onStatus?.('Ağ yanıt vermedi, birkaç saniye bekleniyor...')
+  await sleep(15000)
+  balance = await irys.getLoadedBalance()
+  if (!price.isGreaterThan(balance)) return
+
+  onStatus?.('Cüzdanınızda bir onay isteği daha görünecek...')
+  try {
+    topUp = price.minus(balance).multipliedBy(1.15).integerValue()
+    await irys.fund(topUp)
+    return
+  } catch (err) {
+    lastError = err
+  }
+
   throw new Error(
     lastError instanceof Error
-      ? `depolama ücreti gönderilemedi (ağ zaman aşımı) — ${lastError.message}`
-      : 'depolama ücreti gönderilemedi (ağ zaman aşımı)',
+      ? `depolama ağı yanıt vermedi — ${lastError.message}`
+      : 'depolama ağı yanıt vermedi',
   )
 }
 
