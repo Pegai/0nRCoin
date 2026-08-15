@@ -30,7 +30,7 @@ pub mod sell_lock {
     ) -> Result<()> {
         let account_metas = vec![
             // Index 4 = LaunchConfig PDA'nın execute sırasında account listesindeki
-            // sırası (bkz. ExecuteTransferHook context'i: source, mint, destination,
+            // sırası (bkz. fallback fonksiyonu: source, mint, destination,
             // owner, extra_account_meta_list, launch_config).
             ExtraAccountMeta::new_with_seeds(
                 &[
@@ -116,8 +116,8 @@ pub mod sell_lock {
         Ok(())
     }
 
-    /// Token-2022 programı, bu mint'i ilgilendiren HER transferde (Execute
-    /// arayüzü üzerinden) bu fonksiyonu CPI ile çağırır. Mantık:
+    /// Token-2022 programı, bu mint'i ilgilendiren HER transferde bu
+    /// fonksiyonu (`fallback` üzerinden) CPI ile çağırır. Mantık:
     ///
     /// - Hedef hesap, LaunchConfig'te kayıtlı havuz kasalarından biriyse
     ///   (yani bu bir "satış" / havuza para yatırma işlemiyse) VE süre
@@ -129,33 +129,22 @@ pub mod sell_lock {
     /// başarısız olur; bu durumda transfer normal şekilde (kısıtlamasız)
     /// devam eder — bu, havuz kurulmadan önceki sıradan token transferlerini
     /// (ör. cüzdanlar arası hediye) etkilemez.
-    pub fn execute(ctx: Context<ExecuteTransferHook>, _amount: u64) -> Result<()> {
-        let config = &ctx.accounts.launch_config;
-
-        let destination_key = ctx.accounts.destination_token.key();
-        let is_sell_into_pool =
-            destination_key == config.pool_vault_a || destination_key == config.pool_vault_b;
-
-        if is_sell_into_pool {
-            let now = Clock::get()?.unix_timestamp;
-            require!(now >= config.unlock_timestamp, SellLockError::SellLocked);
-        }
-
-        Ok(())
-    }
-
+    ///
     /// Token-2022'nin transfer hook arayüzü, Anchor'ın standart 8-byte
     /// sighash discriminator'ı yerine kendi ham discriminator formatını
-    /// kullanır (`InitializeExtraAccountMetaList` / `Execute`). Bu yüzden
-    /// çağrılar önce buraya düşer ve doğru instruction'a yönlendirilir.
+    /// kullanır. Bu yüzden çağrılar önce `fallback`'e düşer.
     ///
-    /// Anchor, `#[program]` bloğu içinde tam bu isimde ve imzada bir
-    /// fonksiyon gördüğünde onu otomatik olarak "fallback" işleyicisi
-    /// kabul eder — ekstra bir attribute (`#[interface(...)]` gibi)
-    /// GEREKMEZ ve gerçekte böyle bir attribute yok (resmi örnek:
-    /// https://github.com/solana-developers/anchor-transfer-hook).
+    /// Anchor, `#[program]` bloğu içinde tam "fallback" isminde ve bu
+    /// imzada bir fonksiyon gördüğünde onu otomatik olarak özel işleyici
+    /// kabul eder — ekstra bir attribute gerekmez.
+    ///
+    /// Mantığı, Anchor'ın normalde gizli tuttuğu dahili
+    /// (`__private::__global::...`) çağrı yoluna güvenmek yerine burada
+    /// doğrudan (hesapları elle okuyarak) uyguluyoruz — o dahili yol,
+    /// Solana Playground'un kullandığı Anchor sürümüyle uyuşmadığı için
+    /// derlemeyi bozuyordu.
     pub fn fallback<'info>(
-        program_id: &Pubkey,
+        _program_id: &Pubkey,
         accounts: &'info [AccountInfo<'info>],
         data: &[u8],
     ) -> Result<()> {
@@ -163,9 +152,31 @@ pub mod sell_lock {
             .map_err(|_| error!(SellLockError::InvalidInstruction))?;
 
         match instruction {
-            TransferHookInstruction::Execute { amount } => {
-                let amount_bytes = amount.to_le_bytes();
-                __private::__global::execute(program_id, accounts, &amount_bytes)
+            TransferHookInstruction::Execute { .. } => {
+                // Token-2022'nin CPI ile ilettiği hesap sırası:
+                // [0] source_token, [1] mint, [2] destination_token,
+                // [3] owner, [4] extra_account_meta_list, [5] launch_config
+                // (bizim tek "extra" hesabımız).
+                let destination_token_info = accounts
+                    .get(2)
+                    .ok_or_else(|| error!(SellLockError::InvalidInstruction))?;
+                let launch_config_info = accounts
+                    .get(5)
+                    .ok_or_else(|| error!(SellLockError::InvalidInstruction))?;
+
+                let config_data = launch_config_info.try_borrow_data()?;
+                let mut config_slice: &[u8] = &config_data;
+                let config = LaunchConfig::try_deserialize(&mut config_slice)?;
+
+                let is_sell_into_pool = *destination_token_info.key == config.pool_vault_a
+                    || *destination_token_info.key == config.pool_vault_b;
+
+                if is_sell_into_pool {
+                    let now = Clock::get()?.unix_timestamp;
+                    require!(now >= config.unlock_timestamp, SellLockError::SellLocked);
+                }
+
+                Ok(())
             }
             _ => Err(SellLockError::InvalidInstruction.into()),
         }
@@ -227,33 +238,6 @@ pub struct RegisterLaunch<'info> {
     pub pool_vault_b: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct ExecuteTransferHook<'info> {
-    #[account(
-        token::mint = mint,
-    )]
-    pub source_token: InterfaceAccount<'info, TokenAccount>,
-    pub mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        token::mint = mint,
-    )]
-    pub destination_token: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: Token-2022 tarafından iletilen, transferi başlatan yetki.
-    pub owner: UncheckedAccount<'info>,
-    /// CHECK: Token-2022 spesifikasyonunun beklediği sabit isimli hesap.
-    #[account(
-        seeds = [b"extra-account-metas", mint.key().as_ref()],
-        bump,
-    )]
-    pub extra_account_meta_list: UncheckedAccount<'info>,
-
-    #[account(
-        seeds = [b"launch-config", mint.key().as_ref()],
-        bump = launch_config.bump,
-    )]
-    pub launch_config: Account<'info, LaunchConfig>,
 }
 
 #[error_code]
