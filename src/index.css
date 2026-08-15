@@ -22,6 +22,8 @@ html,
 body {
   margin: 0;
   padding: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -41,6 +43,18 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-width: 0;
+}
+
+/* Metin/adres/rakam gibi içerikler taşan uzun string'ler mobilde yatay
+   taşmaya (overflow) yol açmasın diye; ayrıca flex/grid içindeki metin
+   ağırlıklı elemanların içeriklerine göre büyüyüp konteynerini
+   genişletmesini (min-width:auto varsayılanı) engelliyoruz. */
+input,
+select,
+textarea,
+button {
+  max-width: 100%;
 }
 
 /* Header */
@@ -65,6 +79,7 @@ body {
   gap: 10px;
   font-weight: 700;
   font-size: 1.15rem;
+  min-width: 0;
 }
 
 .logo-mark {
@@ -118,6 +133,7 @@ body {
 
 .wallet-adapter-modal-wrapper {
   background: var(--bg-elevated) !important;
+  max-width: min(400px, 92vw) !important;
 }
 
 /* Hero */
@@ -295,6 +311,18 @@ body {
   padding: 6px 0;
   font-size: 0.85rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  min-width: 0;
+}
+
+.pool-card__row span:first-child {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.pool-card__row span:last-child {
+  min-width: 0;
+  overflow-wrap: break-word;
+  text-align: right;
 }
 
 .pool-card__row span:first-child {
@@ -330,10 +358,12 @@ body {
 .pool-manage__amount-row {
   display: flex;
   gap: 8px;
+  min-width: 0;
 }
 
 .pool-manage__amount-row input {
   flex: 1;
+  min-width: 0;
 }
 
 .pool-manage__max-btn {
@@ -413,6 +443,9 @@ body {
   margin: 56px auto 80px;
   padding: 0 24px;
   flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .form-section--wide {
@@ -425,6 +458,13 @@ body {
   border: 1px solid var(--panel-border);
   border-radius: 20px;
   padding: 32px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.pool-card {
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .token-form h2 {
@@ -446,6 +486,7 @@ body {
   flex-direction: column;
   gap: 6px;
   margin-bottom: 18px;
+  min-width: 0;
 }
 
 .field span {
@@ -464,6 +505,8 @@ body {
   font-size: 0.9rem;
   font-family: inherit;
   resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .field input:focus,
@@ -711,8 +754,21 @@ body {
     padding: 16px;
   }
 
+  .form-section {
+    padding: 0 14px;
+  }
+
   .token-form,
   .result-card {
-    padding: 22px;
+    padding: 18px;
+  }
+
+  .pool-manage__percent-buttons {
+    gap: 6px;
+  }
+
+  .pool-manage__percent-btn {
+    padding: 8px 2px;
+    font-size: 0.72rem;
   }
 }
