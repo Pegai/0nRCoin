@@ -26,7 +26,15 @@ yetkisi kaldırma ve metadata'yı sabitleme (immutable) seçenekleri.
   - **Havuz Oluştur**: İki token için Raydium CPMM (sabit-çarpım) havuzu
     oluşturma — Devnet ve Mainnet'te çalışır.
   - **Likidite Ekle/Çıkar**: Bilinen bir havuza likidite ekleme veya LP
-    token'ı geri çekme.
+    token'ı geri çekme; çekme tarafı Raydium'daki gibi yüzdelik bar ve hızlı
+    seçim düğmeleriyle (%25/50/75/100) çalışır.
+  - **Likidite Kilitle**: LP token'ınızı seçtiğiniz süre boyunca (1/5/24/48
+    saat) kimsenin çekemeyeceği şekilde kilitleme — [Streamflow](https://streamflow.finance)'un
+    Devnet ve Mainnet'te halihazırda çalışan, denetlenmiş kilit/vesting
+    programı üzerinden yapılır (bu sitenin kendi yazdığı bir program değil).
+    Kilit süresi dolmadan kimse (havuzu oluşturan dahil) erken açamaz veya
+    iptal edemez; bu yalnızca likiditenin çekilmesini engeller, alım/satım
+    işlemlerini engellemez.
 - **Güvenlik**: Özel anahtarlar hiçbir zaman siteden çıkmaz; her işlem
   kullanıcının kendi cüzdanında imzalanır.
 

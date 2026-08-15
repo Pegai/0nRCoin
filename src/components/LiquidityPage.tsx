@@ -14,13 +14,14 @@ import {
   type MintRef,
   type PoolSummary,
 } from '../lib/raydium'
+import { LOCK_DURATION_OPTIONS, lockLpTokens, type LockResult } from '../lib/lock'
 import { NETWORKS, type NetworkId } from '../config'
 
 interface Props {
   network: NetworkId
 }
 
-type SubTab = 'search' | 'create' | 'manage'
+type SubTab = 'search' | 'create' | 'manage' | 'lock'
 
 function fmtNum(n: number, digits = 6): string {
   if (!Number.isFinite(n)) return '-'
@@ -56,11 +57,19 @@ export function LiquidityPage({ network }: Props) {
         >
           Likidite Ekle / Çıkar
         </button>
+        <button
+          type="button"
+          className={`subtab ${subTab === 'lock' ? 'subtab--active' : ''}`}
+          onClick={() => setSubTab('lock')}
+        >
+          Likidite Kilitle
+        </button>
       </div>
 
       {subTab === 'search' && <PoolSearch network={network} />}
       {subTab === 'create' && <PoolCreate network={network} connection={connection} wallet={wallet} />}
       {subTab === 'manage' && <PoolManage network={network} connection={connection} wallet={wallet} />}
+      {subTab === 'lock' && <PoolLock network={network} connection={connection} wallet={wallet} />}
     </div>
   )
 }
@@ -655,6 +664,251 @@ function PoolManage({
               İşlem başarılı: <code>{txResult}</code>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PoolLock({
+  network,
+  connection,
+  wallet,
+}: {
+  network: NetworkId
+  connection: ReturnType<typeof useConnection>['connection']
+  wallet: ReturnType<typeof useWallet>
+}) {
+  const [poolId, setPoolId] = useState('')
+  const [poolInfo, setPoolInfo] = useState<ApiV3PoolInfoStandardItemCpmm | null>(null)
+  const [loadingPool, setLoadingPool] = useState(false)
+  const [lpBalance, setLpBalance] = useState(0)
+  const [lockAmount, setLockAmount] = useState('')
+  const [durationSeconds, setDurationSeconds] = useState(LOCK_DURATION_OPTIONS[2].seconds)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  const [lockResult, setLockResult] = useState<LockResult | null>(null)
+
+  async function handleLoadPool(e: FormEvent) {
+    e.preventDefault()
+    setError('')
+    setLockResult(null)
+    setPoolInfo(null)
+    if (!poolId.trim()) {
+      setError('Havuz ID girin.')
+      return
+    }
+    setLoadingPool(true)
+    try {
+      const raydium = await loadRaydium(connection, wallet, network)
+      const { poolInfo } = await getPoolById(raydium, poolId.trim(), network)
+      setPoolInfo(poolInfo)
+      if (wallet.publicKey) {
+        const lp = await getWalletTokenBalance(
+          connection,
+          wallet.publicKey,
+          poolInfo.lpMint.address,
+          poolInfo.lpMint.programId,
+        )
+        setLpBalance(lp)
+        setLockAmount(String(lp))
+      }
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Havuz bulunamadı.')
+    } finally {
+      setLoadingPool(false)
+    }
+  }
+
+  async function handleLock() {
+    if (!poolInfo) return
+    setError('')
+    setLockResult(null)
+    if (!wallet.connected || !wallet.publicKey) {
+      setError('Devam etmek için önce cüzdanınızı bağlayın.')
+      return
+    }
+    if (!lockAmount || Number(lockAmount) <= 0) {
+      setError('Kilitlenecek geçerli bir LP miktarı girin.')
+      return
+    }
+    if (Number(lockAmount) > lpBalance) {
+      setError('Kilitlemek istediğiniz miktar LP bakiyenizden fazla.')
+      return
+    }
+    setBusy(true)
+    try {
+      const result = await lockLpTokens(
+        connection,
+        network,
+        wallet,
+        poolInfo.lpMint.address,
+        poolInfo.lpMint.decimals,
+        poolInfo.lpMint.programId,
+        lockAmount,
+        durationSeconds,
+        setStatus,
+      )
+      setLockResult(result)
+      setStatus('')
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Likidite kilitlenirken bir hata oluştu.')
+      setStatus('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cluster = NETWORKS[network].explorerCluster
+
+  return (
+    <div className="token-form">
+      <h2>Likidite Kilitle</h2>
+      <p className="subtab-desc">
+        LP token'ınızı, belirlediğiniz süre boyunca kimsenin (siz dahil) çekemeyeceği şekilde
+        kilitleyin — alıcılara likiditeyi aniden çekmeyeceğinizi zincir üzerinde ispatlamanın bir
+        yolu. Bu, <strong>Streamflow</strong>'un Devnet ve Mainnet'te halihazırda çalışan, yaygın
+        kullanılan kilit/vesting programı üzerinden yapılır; bu sitenin kendi yazıp deploy ettiği
+        bir program değildir.
+      </p>
+
+      <div className="alert alert--warning">
+        ⚠️ Bu kilit yalnızca <strong>likiditenin çekilmesini</strong> engeller —{' '}
+        <strong>alım/satım işlemlerini engellemez</strong>, havuzda normal şekilde alım-satım
+        devam eder. Süre dolmadan siz dahil hiç kimse kilidi erken açamaz veya iptal edemez; bu,
+        kilidin güven değerinin kaynağıdır — geri dönüşü yoktur.
+      </div>
+
+      <form onSubmit={handleLoadPool}>
+        <label className="field">
+          <span>Havuz ID *</span>
+          <input
+            type="text"
+            placeholder="ör. havuz oluşturunca aldığınız Pool ID"
+            value={poolId}
+            onChange={(e) => setPoolId(e.target.value)}
+          />
+        </label>
+        <button type="submit" className="btn btn--secondary" disabled={loadingPool}>
+          {loadingPool ? 'Getiriliyor...' : 'Havuzu Getir'}
+        </button>
+      </form>
+
+      {error && (
+        <div className="alert alert--error" style={{ marginTop: 16 }}>
+          {error}
+        </div>
+      )}
+
+      {poolInfo && !lockResult && (
+        <div className="pool-card" style={{ marginTop: 20 }}>
+          <div className="pool-card__header">
+            <strong>
+              {poolInfo.mintA.symbol || '?'} / {poolInfo.mintB.symbol || '?'}
+            </strong>
+          </div>
+          <div className="pool-card__row">
+            <span>LP Bakiyeniz</span>
+            <span>{fmtNum(lpBalance, 6)}</span>
+          </div>
+
+          <hr className="pool-manage__divider" />
+
+          <label className="field">
+            <span>Kilitlenecek LP Miktarı</span>
+            <div className="pool-manage__amount-row">
+              <input
+                type="text"
+                inputMode="decimal"
+                value={lockAmount}
+                onChange={(e) => setLockAmount(e.target.value.replace(/[^\d.]/g, ''))}
+              />
+              <button
+                type="button"
+                className="btn btn--secondary pool-manage__max-btn"
+                onClick={() => setLockAmount(String(lpBalance))}
+                disabled={lpBalance <= 0}
+              >
+                MAX
+              </button>
+            </div>
+          </label>
+
+          <div className="field">
+            <span>Kilit Süresi</span>
+            <div className="pool-manage__percent-buttons">
+              {LOCK_DURATION_OPTIONS.map((opt) => (
+                <button
+                  key={opt.seconds}
+                  type="button"
+                  className={`btn pool-manage__percent-btn ${
+                    durationSeconds === opt.seconds ? 'btn--primary' : 'btn--secondary'
+                  }`}
+                  onClick={() => setDurationSeconds(opt.seconds)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <small className="pool-manage__preview">
+            {fmtNum(Number(lockAmount) || 0, 6)} LP, yaklaşık{' '}
+            {new Date(Date.now() + durationSeconds * 1000).toLocaleString('tr-TR')} tarihine kadar
+            kilitlenecek.
+          </small>
+
+          {status && <div className="alert alert--info">{status}</div>}
+
+          <button
+            type="button"
+            className="btn btn--primary pool-manage__action-btn"
+            onClick={handleLock}
+            disabled={busy || lpBalance <= 0}
+          >
+            {busy ? 'İşleniyor...' : 'Likiditeyi Kilitle'}
+          </button>
+        </div>
+      )}
+
+      {lockResult && (
+        <div className="result-card" style={{ marginTop: 20 }}>
+          <div className="result-card__icon">🔒</div>
+          <h2>Likidite Kilitlendi!</h2>
+          <p>
+            {fmtNum(Number(lockAmount), 6)} LP, {lockResult.unlockDate.toLocaleString('tr-TR')}{' '}
+            tarihine kadar kilitli. Bu tarihten önce (siz dahil) kimse çekemez.
+          </p>
+          <div className="result-card__row">
+            <span>Kilit (Kontrat) ID</span>
+            <code>{lockResult.contractId}</code>
+          </div>
+          <div className="result-card__row">
+            <span>İşlem İmzası</span>
+            <code>{lockResult.txId}</code>
+          </div>
+          <div className="result-card__row">
+            <span>Açılış Tarihi</span>
+            <code>{lockResult.unlockDate.toLocaleString('tr-TR')}</code>
+          </div>
+          <div className="result-card__links">
+            <a
+              className="btn btn--secondary"
+              href={`https://explorer.solana.com/tx/${lockResult.txId}${cluster}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Explorer'da Görüntüle
+            </a>
+          </div>
+          <p className="subtab-desc">
+            Bu bilgiyi (Kilit ID + açılış tarihi) token açıklamanıza veya duyurunuza ekleyerek,
+            alıcıların likiditenin kilitli olduğunu Solana Explorer üzerinden bağımsız şekilde
+            doğrulayabilmesini sağlayabilirsiniz.
+          </p>
         </div>
       )}
     </div>
