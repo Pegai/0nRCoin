@@ -4,12 +4,11 @@
 resolution = true
 skip-lint = false
 
-# NOT: Aşağıdaki ID gerçek değil, yalnızca base58 formatını sağlayan bir
-# yer tutucu (System Program ID'si). İlk `anchor keys sync` çalıştırdığınızda
-# gerçek program anahtarınızla otomatik güncellenecek; ardından bunu ve
-# lib.rs içindeki declare_id!() satırını eşleştirin.
+# Solana Playground üzerinden Devnet'e deploy edildi (bkz. program/sell-lock/README.md).
+# Mainnet'e henüz deploy edilmedi; oraya deploy edilene kadar aşağıdaki
+# mainnet ID'si yer tutucudur.
 [programs.devnet]
-sell_lock = "11111111111111111111111111111111111111112"
+sell_lock = "3SgfMbBMbsaB21QaZgcGmRYbUTGGEyErJipxM8u2Uqy5"
 
 [programs.mainnet]
 sell_lock = "11111111111111111111111111111111111111112"

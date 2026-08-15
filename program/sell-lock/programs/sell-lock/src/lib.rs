@@ -5,9 +5,8 @@ use anchor_spl::token_interface::{Mint, TokenAccount};
 use spl_tlv_account_resolution::{account::ExtraAccountMeta, state::ExtraAccountMetaList};
 use spl_transfer_hook_interface::instruction::{ExecuteInstruction, TransferHookInstruction};
 
-// `anchor keys sync` çalıştırdıktan sonra burayı ve Anchor.toml'daki ID'yi
-// gerçek deploy anahtarınızla eşleştirin.
-declare_id!("11111111111111111111111111111111111111112");
+// Solana Playground üzerinden Devnet'e deploy edilen gerçek program ID'si.
+declare_id!("3SgfMbBMbsaB21QaZgcGmRYbUTGGEyErJipxM8u2Uqy5");
 
 // Anti-snipe kilidi için izin verilen süreler: 15 dk / 1 saat / 5 saat / 24 saat.
 // Başka bir süre denemesi reddedilir — bu, "kilit süresi keyfi uzatılabilir/
