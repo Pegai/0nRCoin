@@ -30,6 +30,13 @@ export function ResultCard({ result, network = 'devnet', onReset }: Props) {
         <code>{result.signature}</code>
       </div>
 
+      {result.sellLockEnabled && (
+        <div className="alert alert--info">
+          🔒 Satış kilidi etkin (Token-2022). Havuz oluştururken bu token için kilit süresini
+          etkinleştirmeyi unutmayın — "Havuz Oluştur" sonrasında bir seçenek göreceksiniz.
+        </div>
+      )}
+
       <div className="result-card__links">
         <a
           className="btn btn--secondary"

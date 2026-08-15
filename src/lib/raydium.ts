@@ -179,6 +179,8 @@ async function getCpmmFeeConfig(raydium: Raydium, network: NetworkId) {
 export interface CreatePoolResult {
   txId: string
   poolId: string
+  vaultA: string
+  vaultB: string
 }
 
 export async function createCpmmPool(
@@ -220,7 +222,12 @@ export async function createCpmmPool(
   onStatus?.('Cüzdanınızda onay bekleniyor...')
   const { txId } = await execute({ sendAndConfirm: true })
 
-  return { txId, poolId: extInfo.address.poolId.toBase58() }
+  return {
+    txId,
+    poolId: extInfo.address.poolId.toBase58(),
+    vaultA: extInfo.address.vaultA.toBase58(),
+    vaultB: extInfo.address.vaultB.toBase58(),
+  }
 }
 
 export async function addCpmmLiquidity(

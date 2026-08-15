@@ -9,9 +9,14 @@ import {
 import type { WalletContextState } from '@solana/wallet-adapter-react'
 import {
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   MINT_SIZE,
+  ExtensionType,
+  getMintLen,
   getMinimumBalanceForRentExemptMint,
   createInitializeMintInstruction,
+  createInitializeTransferHookInstruction,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountInstruction,
   createMintToInstruction,
@@ -23,6 +28,7 @@ import {
   createCreateMetadataAccountV3Instruction,
 } from '@metaplex-foundation/mpl-token-metadata'
 import { FEE_WALLET, FEE_AMOUNT_SOL } from '../config'
+import { SELL_LOCK_PROGRAM_ID, buildInitializeExtraAccountMetaListIx } from './sellLock'
 
 export interface TokenFormData {
   name: string
@@ -37,12 +43,16 @@ export interface TokenFormData {
   revokeMint: boolean
   revokeFreeze: boolean
   immutable: boolean
+  // > 0 ise mint, Token-2022 + Transfer Hook uzantısıyla (satış kilidi
+  // programımıza bağlı olarak) oluşturulur. 0 = normal SPL Token.
+  sellLockDurationSeconds: number
 }
 
 export interface CreateTokenResult {
   mint: string
   signature: string
   tokenAccount: string
+  sellLockEnabled: boolean
 }
 
 function findMetadataPda(mint: PublicKey): PublicKey {
@@ -75,10 +85,32 @@ export async function createToken(
   const decimals = data.decimals
   const supplyRaw = BigInt(data.supply) * BigInt(10) ** BigInt(decimals)
 
-  onStatus?.('Kira (rent) hesaplanıyor...')
-  const rentLamports = await getMinimumBalanceForRentExemptMint(connection)
+  // Satış kilidi süresi seçilmişse mint, Token-2022 + Transfer Hook
+  // uzantısıyla oluşturulur (bkz. src/lib/sellLock.ts); aksi halde normal
+  // (legacy) SPL Token programı kullanılır. İki durumda da geri kalan tüm
+  // akış (ATA, metadata, yetkiler) aynı şekilde çalışır — sadece hangi
+  // token programına ait olduğu değişir.
+  const sellLockEnabled = data.sellLockDurationSeconds > 0
+  const tokenProgramId = sellLockEnabled ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
 
-  const associatedTokenAccount = getAssociatedTokenAddressSync(mint, payer)
+  onStatus?.('Kira (rent) hesaplanıyor...')
+  let mintSpace: number
+  let rentLamports: number
+  if (sellLockEnabled) {
+    mintSpace = getMintLen([ExtensionType.TransferHook])
+    rentLamports = await connection.getMinimumBalanceForRentExemption(mintSpace)
+  } else {
+    mintSpace = MINT_SIZE
+    rentLamports = await getMinimumBalanceForRentExemptMint(connection)
+  }
+
+  const associatedTokenAccount = getAssociatedTokenAddressSync(
+    mint,
+    payer,
+    false,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  )
   const metadataPda = findMetadataPda(mint)
 
   const tx = new Transaction()
@@ -88,18 +120,34 @@ export async function createToken(
     SystemProgram.createAccount({
       fromPubkey: payer,
       newAccountPubkey: mint,
-      space: MINT_SIZE,
+      space: mintSpace,
       lamports: rentLamports,
-      programId: TOKEN_PROGRAM_ID,
+      programId: tokenProgramId,
     }),
-    createInitializeMintInstruction(mint, decimals, payer, payer, TOKEN_PROGRAM_ID),
   )
 
+  // Transfer Hook uzantısı, mint'in kendisi initialize edilmeden ÖNCE
+  // ayarlanmalıdır (Token-2022 uzantı kuralı).
+  if (sellLockEnabled) {
+    tx.add(createInitializeTransferHookInstruction(mint, payer, SELL_LOCK_PROGRAM_ID, tokenProgramId))
+  }
+
+  tx.add(createInitializeMintInstruction(mint, decimals, payer, payer, tokenProgramId))
+
   // 2) Cüzdan için ilişkili token hesabı (ATA) oluştur
-  tx.add(createAssociatedTokenAccountInstruction(payer, associatedTokenAccount, payer, mint))
+  tx.add(
+    createAssociatedTokenAccountInstruction(
+      payer,
+      associatedTokenAccount,
+      payer,
+      mint,
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    ),
+  )
 
   // 3) Toplam arzı bastır (mint) ve cüzdana gönder
-  tx.add(createMintToInstruction(mint, associatedTokenAccount, payer, supplyRaw))
+  tx.add(createMintToInstruction(mint, associatedTokenAccount, payer, supplyRaw, [], tokenProgramId))
 
   // 4) Metaplex Token Metadata hesabı (isim/sembol/logo/açıklama on-chain referansı)
   tx.add(
@@ -131,12 +179,14 @@ export async function createToken(
 
   // 5) Opsiyonel: mint yetkisini kaldır (arz sabitlenir, artık yeni token basılamaz)
   if (data.revokeMint) {
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens, null))
+    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens, null, [], tokenProgramId))
   }
 
   // 6) Opsiyonel: freeze yetkisini kaldır
   if (data.revokeFreeze) {
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, null))
+    tx.add(
+      createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, null, [], tokenProgramId),
+    )
   }
 
   // 7) Opsiyonel hizmet ücreti (yalnızca site sahibi FEE_WALLET tanımladıysa eklenir)
@@ -167,9 +217,33 @@ export async function createToken(
   onStatus?.('Onay bekleniyor...')
   await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed')
 
+  // Satış kilidi etkinse, Token-2022'nin her transferde bizim programımızı
+  // çağırabilmesi için zorunlu olan "extra account meta list" hesabını
+  // ayrı bir işlemde oluşturuyoruz (bkz. program/sell-lock).
+  if (sellLockEnabled) {
+    onStatus?.('Satış kilidi kaydediliyor...')
+    const metaListTx = new Transaction().add(buildInitializeExtraAccountMetaListIx(payer, mint))
+    const metaListBlockhash = await connection.getLatestBlockhash()
+    metaListTx.recentBlockhash = metaListBlockhash.blockhash
+    metaListTx.feePayer = payer
+
+    onStatus?.('Cüzdanınızda onay bekleniyor (satış kilidi)...')
+    const signedMetaListTx = await wallet.signTransaction(metaListTx)
+
+    onStatus?.('Satış kilidi işlemi gönderiliyor...')
+    const metaListSignature = await connection.sendRawTransaction(signedMetaListTx.serialize())
+
+    onStatus?.('Satış kilidi onaylanıyor...')
+    await connection.confirmTransaction(
+      { signature: metaListSignature, ...metaListBlockhash },
+      'confirmed',
+    )
+  }
+
   return {
     mint: mint.toBase58(),
     signature,
     tokenAccount: associatedTokenAccount.toBase58(),
+    sellLockEnabled,
   }
 }

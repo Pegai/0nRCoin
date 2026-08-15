@@ -20,6 +20,14 @@ yetkisi kaldırma ve metadata'yı sabitleme (immutable) seçenekleri.
   (ve varsa metadata URI) zincire yazılır.
 - **Gelişmiş yetkiler**: Mint yetkisini kaldırma (arzı sabitleme), freeze
   yetkisini kaldırma, metadata'yı immutable yapma.
+- **Satış Kilidi (Anti-Snipe)**: Token oluştururken opsiyonel olarak seçilen
+  süre (15dk/1sa/5sa/24sa) — likidite havuzu kurulduktan sonra bu süre
+  boyunca hiç kimse (havuzu oluşturan dahil) satış yapamaz, alım her zaman
+  serbesttir; süre dolunca otomatik ve kalıcı olarak herkes için açılır.
+  Sniper botların hızlı al-sat yapıp fiyatı bozmasını engellemek için
+  tasarlandı. Token, Token-2022 + Transfer Hook uzantısıyla oluşturulur ve
+  Devnet'te deploy edilmiş kendi programımızı (`program/sell-lock/`) kullanır
+  — kaynak kodu ve deploy geçmişi o klasörde.
 - **Likidite Havuzu sekmesi** (Raydium entegrasyonu):
   - **Havuz Ara**: Bir token'ın mevcut Raydium havuzlarını, fiyatını ve
     likiditesini görüntüleme (salt okunur, cüzdan gerekmez, yalnızca Mainnet).
