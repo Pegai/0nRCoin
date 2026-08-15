@@ -148,7 +148,12 @@ pub mod sell_lock {
     /// sighash discriminator'ı yerine kendi ham discriminator formatını
     /// kullanır (`InitializeExtraAccountMetaList` / `Execute`). Bu yüzden
     /// çağrılar önce buraya düşer ve doğru instruction'a yönlendirilir.
-    #[interface(spl_transfer_hook_interface::execute)]
+    ///
+    /// Anchor, `#[program]` bloğu içinde tam bu isimde ve imzada bir
+    /// fonksiyon gördüğünde onu otomatik olarak "fallback" işleyicisi
+    /// kabul eder — ekstra bir attribute (`#[interface(...)]` gibi)
+    /// GEREKMEZ ve gerçekte böyle bir attribute yok (resmi örnek:
+    /// https://github.com/solana-developers/anchor-transfer-hook).
     pub fn fallback<'info>(
         program_id: &Pubkey,
         accounts: &'info [AccountInfo<'info>],
