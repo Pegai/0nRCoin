@@ -3,6 +3,7 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   Transaction,
   LAMPORTS_PER_SOL,
 } from '@solana/web3.js'
@@ -26,6 +27,8 @@ import {
 import {
   PROGRAM_ID as METADATA_PROGRAM_ID,
   createCreateMetadataAccountV3Instruction,
+  createCreateInstruction,
+  TokenStandard,
 } from '@metaplex-foundation/mpl-token-metadata'
 import { FEE_WALLET, FEE_AMOUNT_SOL } from '../config'
 import { SELL_LOCK_PROGRAM_ID, buildInitializeExtraAccountMetaListIx } from './sellLock'
@@ -150,32 +153,78 @@ export async function createToken(
   tx.add(createMintToInstruction(mint, associatedTokenAccount, payer, supplyRaw, [], tokenProgramId))
 
   // 4) Metaplex Token Metadata hesabı (isim/sembol/logo/açıklama on-chain referansı)
-  tx.add(
-    createCreateMetadataAccountV3Instruction(
-      {
-        metadata: metadataPda,
-        mint,
-        mintAuthority: payer,
-        payer,
-        updateAuthority: payer,
-      },
-      {
-        createMetadataAccountArgsV3: {
-          data: {
-            name: data.name,
-            symbol: data.symbol,
-            uri: data.imageUri || '',
-            sellerFeeBasisPoints: 0,
-            creators: null,
-            collection: null,
-            uses: null,
-          },
-          isMutable: !data.immutable,
-          collectionDetails: null,
+  //
+  // Token-2022 mint'ler (özellikle Transfer Hook gibi "kısıtlayıcı"
+  // uzantıları olanlar) için eski CreateMetadataAccountV3 talimatı,
+  // mint'i otomatik olarak "Programmable NFT" sanıp reddediyor (0x99
+  // hatası). Bunun yerine, token programını açıkça belirtebildiğimiz ve
+  // token standardını "Fungible" olarak işaretleyebildiğimiz daha yeni,
+  // birleşik "Create" talimatını kullanıyoruz — bu, hem legacy SPL Token
+  // hem Token-2022 mint'lerle doğru çalışıyor.
+  if (sellLockEnabled) {
+    tx.add(
+      createCreateInstruction(
+        {
+          metadata: metadataPda,
+          mint,
+          authority: payer,
+          payer,
+          updateAuthority: payer,
+          systemProgram: SystemProgram.programId,
+          sysvarInstructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+          splTokenProgram: tokenProgramId,
         },
-      },
-    ),
-  )
+        {
+          createArgs: {
+            __kind: 'V1',
+            assetData: {
+              name: data.name,
+              symbol: data.symbol,
+              uri: data.imageUri || '',
+              sellerFeeBasisPoints: 0,
+              creators: null,
+              primarySaleHappened: false,
+              isMutable: !data.immutable,
+              tokenStandard: TokenStandard.Fungible,
+              collection: null,
+              uses: null,
+              collectionDetails: null,
+              ruleSet: null,
+            },
+            decimals,
+            printSupply: null,
+          },
+        },
+      ),
+    )
+  } else {
+    tx.add(
+      createCreateMetadataAccountV3Instruction(
+        {
+          metadata: metadataPda,
+          mint,
+          mintAuthority: payer,
+          payer,
+          updateAuthority: payer,
+        },
+        {
+          createMetadataAccountArgsV3: {
+            data: {
+              name: data.name,
+              symbol: data.symbol,
+              uri: data.imageUri || '',
+              sellerFeeBasisPoints: 0,
+              creators: null,
+              collection: null,
+              uses: null,
+            },
+            isMutable: !data.immutable,
+            collectionDetails: null,
+          },
+        },
+      ),
+    )
+  }
 
   // 5) Opsiyonel: mint yetkisini kaldır (arz sabitlenir, artık yeni token basılamaz)
   if (data.revokeMint) {
