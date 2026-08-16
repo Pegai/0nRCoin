@@ -80,6 +80,30 @@ function toApiToken(mint: MintRef): Pick<ApiV3Token, 'address' | 'decimals' | 'p
   return { address: mint.address, decimals: mint.decimals, programId: mint.programId }
 }
 
+// Raydium SDK'sının `execute({ sendAndConfirm: true })` çağrısı, işlem
+// zincirde BAŞARISIZ olsa bile (ör. programın kendisi bir hata
+// döndürdüğünde) hata fırlatmadan bir txId dönebiliyor — "confirm" burada
+// yalnızca işlemin zincire işlendiğini garanti ediyor, instruction'ların
+// başarılı olduğunu değil. Bu yüzden her execute() sonrası işlemi zincirden
+// tekrar okuyup gerçekten başarılı mı diye kontrol ediyoruz.
+async function verifyTxSuccess(connection: Connection, txId: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tx = await connection.getTransaction(txId, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    })
+    if (tx) {
+      if (tx.meta?.err) {
+        throw new Error(
+          `İşlem zincirde başarısız oldu: ${JSON.stringify(tx.meta.err)}. İşlem imzası: ${txId}`,
+        )
+      }
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+}
+
 // Havuz arama/görüntüleme gibi salt okunur işlemler cüzdan gerektirmez;
 // yalnızca işlem imzalayan fonksiyonlar (oluşturma, likidite ekleme/çekme)
 // bağlı bir cüzdan ister.
@@ -223,6 +247,9 @@ export async function createCpmmPool(
   onStatus?.('Cüzdanınızda onay bekleniyor...')
   const { txId } = await execute({ sendAndConfirm: true })
 
+  onStatus?.('İşlem sonucu doğrulanıyor...')
+  await verifyTxSuccess(raydium.connection, txId)
+
   // `extInfo.address`, SDK'nın işlem çalıştırılmadan önce döndürdüğü bir
   // nesne — pratikte bazı alanları (ör. gerçek havuz adresi yerine işlem
   // içinde açılıp kapatılan geçici bir hesap) güvenilmez çıktı. Bunun
@@ -267,6 +294,8 @@ export async function addCpmmLiquidity(
 
   onStatus?.('Cüzdanınızda onay bekleniyor...')
   const { txId } = await execute({ sendAndConfirm: true })
+  onStatus?.('İşlem sonucu doğrulanıyor...')
+  await verifyTxSuccess(raydium.connection, txId)
   return txId
 }
 
@@ -290,5 +319,7 @@ export async function withdrawCpmmLiquidity(
 
   onStatus?.('Cüzdanınızda onay bekleniyor...')
   const { txId } = await execute({ sendAndConfirm: true })
+  onStatus?.('İşlem sonucu doğrulanıyor...')
+  await verifyTxSuccess(raydium.connection, txId)
   return txId
 }
