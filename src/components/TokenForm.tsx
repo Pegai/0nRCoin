@@ -3,7 +3,6 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { createToken, type TokenFormData, type CreateTokenResult } from '../lib/createToken'
 import { uploadLogoAndMetadata } from '../lib/irys'
 import { resizeImageFile } from '../lib/image'
-import { SELL_LOCK_DURATION_OPTIONS, formatSellLockDuration } from '../lib/sellLock'
 import { DEFAULT_DECIMALS, FEE_WALLET, FEE_AMOUNT_SOL, type NetworkId } from '../config'
 import { ResultCard } from './ResultCard'
 
@@ -25,7 +24,6 @@ const initialState: TokenFormData = {
   revokeMint: false,
   revokeFreeze: false,
   immutable: false,
-  sellLockDurationSeconds: 0,
 }
 
 interface Props {
@@ -153,15 +151,7 @@ export function TokenForm({ network }: Props) {
         }
       }
 
-      let description = form.description
-      if (form.sellLockDurationSeconds > 0) {
-        const disclosure = `Satış Kilidi: Likidite havuzu oluşturulduktan sonra ${formatSellLockDuration(
-          form.sellLockDurationSeconds,
-        ).toLowerCase()} boyunca hiç kimse (havuzu oluşturan dahil) bu token'ı satamaz — alım her zaman serbesttir. Süre dolunca otomatik olarak herkes için açılır.`
-        description = description ? `${description}\n\n${disclosure}` : disclosure
-      }
-
-      const res = await createToken(connection, wallet, { ...form, imageUri, description }, setStatus)
+      const res = await createToken(connection, wallet, { ...form, imageUri }, setStatus)
       setResult(res)
       setStatus('')
     } catch (err) {
@@ -309,31 +299,6 @@ export function TokenForm({ network }: Props) {
           />
         </label>
       </div>
-
-      <fieldset className="authorities">
-        <legend>Satış Kilidi (Anti-Snipe)</legend>
-        <p className="subtab-desc" style={{ marginTop: 0 }}>
-          Likidite havuzu oluşturulduktan sonra, seçtiğiniz süre boyunca <strong>hiç kimse</strong>{' '}
-          (siz dahil) bu token'ı satamaz — alım her zaman serbesttir. Süre dolunca otomatik ve
-          kalıcı olarak herkes için açılır; kimse erken açamaz. Bu, sniper botların hızlı al-sat
-          yapıp fiyatı bozmasını engellemek için tasarlandı. Etkinleştirirseniz token, Token-2022
-          standardıyla oluşturulur.
-        </p>
-        <div className="pool-manage__percent-buttons" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
-          {SELL_LOCK_DURATION_OPTIONS.map((opt) => (
-            <button
-              key={opt.seconds}
-              type="button"
-              className={`btn pool-manage__percent-btn ${
-                form.sellLockDurationSeconds === opt.seconds ? 'btn--primary' : 'btn--secondary'
-              }`}
-              onClick={() => update('sellLockDurationSeconds', opt.seconds)}
-            >
-              {opt.seconds === 0 ? 'Kapalı' : opt.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
 
       <fieldset className="authorities">
         <legend>Gelişmiş Yetkiler</legend>

@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
-import { PublicKey } from '@solana/web3.js'
 import type { ApiV3PoolInfoStandardItemCpmm, CpmmKeys } from '@raydium-io/raydium-sdk-v2'
 import {
   NATIVE_SOL_MINT,
@@ -17,7 +16,6 @@ import {
   type PoolSummary,
 } from '../lib/raydium'
 import { LOCK_DURATION_OPTIONS, lockLpTokens, type LockResult } from '../lib/lock'
-import { SELL_LOCK_DURATION_OPTIONS, hasSellLockHook, registerLaunch } from '../lib/sellLock'
 import { NETWORKS, type NetworkId } from '../config'
 
 interface Props {
@@ -223,16 +221,6 @@ function PoolCreate({
   const [error, setError] = useState('')
   const [result, setResult] = useState<CreatePoolResult | null>(null)
 
-  // Havuz oluşturulan token'lardan biri satış kilidi (Token-2022 Transfer
-  // Hook) uzantısına sahipse, o mint'in adresi burada tutulur — havuz
-  // kurulduktan sonra kilidi etkinleştirme seçeneği göstermek için.
-  const [sellLockMint, setSellLockMint] = useState<string | null>(null)
-  const [sellLockDuration, setSellLockDuration] = useState(SELL_LOCK_DURATION_OPTIONS[1].seconds)
-  const [sellLockBusy, setSellLockBusy] = useState(false)
-  const [sellLockStatus, setSellLockStatus] = useState('')
-  const [sellLockError, setSellLockError] = useState('')
-  const [sellLockTx, setSellLockTx] = useState('')
-
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
     setError('')
@@ -273,101 +261,12 @@ function PoolCreate({
       const res = await createCpmmPool(raydium, network, mintA, mintB, amountA, amountB, setStatus)
       setResult(res)
       setStatus('')
-
-      // Havuzu kurulan token'lardan biri satış kilidi uzantısına sahipse
-      // (bkz. src/lib/sellLock.ts), kilidi etkinleştirme seçeneğini göster.
-      const [aHasHook, bHasHook] = await Promise.all([
-        hasSellLockHook(connection, new PublicKey(mintA.address)),
-        hasSellLockHook(connection, new PublicKey(mintB.address)),
-      ])
-      if (aHasHook) setSellLockMint(mintA.address)
-      else if (bHasHook) setSellLockMint(mintB.address)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Havuz oluşturulurken bir hata oluştu.')
       setStatus('')
     } finally {
       setLoading(false)
-    }
-  }
-
-  async function handleRegisterLaunch() {
-    if (!result || !sellLockMint) return
-    setSellLockError('')
-    setSellLockTx('')
-    if (!wallet.connected || !wallet.publicKey) {
-      setSellLockError('Devam etmek için önce cüzdanınızı bağlayın.')
-      return
-    }
-    setSellLockBusy(true)
-    try {
-      // Havuz oluşturma çağrısının döndürdüğü kasa adresleri yerine,
-      // havuzu zincirden ID'siyle tekrar okuyup gerçek (doğrulanmış) kasa
-      // adreslerini kullanıyoruz — daha güvenilir. Havuz daha yeni
-      // oluşturulduğu için, bağlı olduğumuz RPC sunucusu henüz güncel
-      // olmayabilir — birkaç kez, artan bekleme süreleriyle tekrar deniyoruz.
-      const raydium = await loadRaydium(connection, wallet, network)
-      let poolKeys: Awaited<ReturnType<typeof getPoolById>>['poolKeys']
-      const retryDelaysMs = [1000, 2000, 4000, 6000]
-      let lastErr: unknown
-      for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
-        setSellLockStatus(
-          attempt === 0
-            ? 'Havuz kasaları doğrulanıyor...'
-            : `Havuz kasaları doğrulanıyor (tekrar deneniyor ${attempt}/${retryDelaysMs.length})...`,
-        )
-        try {
-          const res = await getPoolById(raydium, result.poolId, network)
-          if (res.poolKeys) {
-            poolKeys = res.poolKeys
-            break
-          }
-        } catch (err) {
-          lastErr = err
-        }
-        if (attempt < retryDelaysMs.length) {
-          await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]))
-        }
-      }
-      // Zincirden okuma tüm denemelere rağmen başarısız olduysa, havuz
-      // oluşturma çağrısının bu SEÇ oturumda döndürdüğü (taze) kasa
-      // adreslerini yedek olarak kullan.
-      let vaultA: string
-      let vaultB: string
-      if (poolKeys) {
-        vaultA = poolKeys.vault.A
-        vaultB = poolKeys.vault.B
-      } else if (result.vaultA && result.vaultB) {
-        setSellLockStatus('Zincirden okunamadı, oluşturma işlemindeki kasa adresleri kullanılıyor...')
-        vaultA = result.vaultA
-        vaultB = result.vaultB
-      } else {
-        throw new Error(
-          lastErr instanceof Error
-            ? `Havuz kasa adresleri okunamadı: ${lastErr.message}. Birkaç saniye bekleyip tekrar deneyin.`
-            : 'Havuz kasa adresleri okunamadı, birkaç saniye bekleyip tekrar deneyin.',
-        )
-      }
-
-      const sig = await registerLaunch(
-        connection,
-        wallet,
-        new PublicKey(sellLockMint),
-        new PublicKey(vaultA),
-        new PublicKey(vaultB),
-        sellLockDuration,
-        setSellLockStatus,
-      )
-      setSellLockTx(sig)
-      setSellLockStatus('')
-    } catch (err) {
-      console.error(err)
-      setSellLockError(
-        err instanceof Error ? err.message : 'Satış kilidi etkinleştirilirken bir hata oluştu.',
-      )
-      setSellLockStatus('')
-    } finally {
-      setSellLockBusy(false)
     }
   }
 
@@ -397,58 +296,10 @@ function PoolCreate({
           </a>
         </div>
 
-        {sellLockMint && !sellLockTx && (
-          <div className="pool-manage__section" style={{ textAlign: 'left', marginTop: 20 }}>
-            <div className="pool-manage__section-title">Satış Kilidini Etkinleştir</div>
-            <p className="subtab-desc">
-              Bu token satış kilidi (Token-2022 Transfer Hook) ile oluşturulmuş. Şimdi süreyi
-              seçip etkinleştirirseniz, seçtiğiniz süre boyunca (havuz kurulduğu andan itibaren)
-              hiç kimse bu havuza satış yapamaz — alım her zaman serbest kalır.{' '}
-              <strong>Bu işlem geri alınamaz ve süre bir daha değiştirilemez.</strong>
-            </p>
-            <div
-              className="pool-manage__percent-buttons"
-              style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}
-            >
-              {SELL_LOCK_DURATION_OPTIONS.filter((o) => o.seconds > 0).map((opt) => (
-                <button
-                  key={opt.seconds}
-                  type="button"
-                  className={`btn pool-manage__percent-btn ${
-                    sellLockDuration === opt.seconds ? 'btn--primary' : 'btn--secondary'
-                  }`}
-                  onClick={() => setSellLockDuration(opt.seconds)}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            {sellLockError && <div className="alert alert--error">{sellLockError}</div>}
-            {sellLockStatus && <div className="alert alert--info">{sellLockStatus}</div>}
-            <button
-              type="button"
-              className="btn btn--primary pool-manage__action-btn"
-              onClick={handleRegisterLaunch}
-              disabled={sellLockBusy}
-            >
-              {sellLockBusy ? 'İşleniyor...' : 'Satış Kilidini Etkinleştir'}
-            </button>
-          </div>
-        )}
-
-        {sellLockTx && (
-          <div className="alert alert--info" style={{ textAlign: 'left', marginTop: 20 }}>
-            🔒 Satış kilidi etkinleştirildi. İşlem imzası: <code>{sellLockTx}</code>
-          </div>
-        )}
-
         <button
           className="btn btn--primary"
           onClick={() => {
             setResult(null)
-            setSellLockMint(null)
-            setSellLockTx('')
-            setSellLockError('')
             setMintAAddr('')
             setMintBAddr('')
             setAmountA('')
