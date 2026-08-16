@@ -7,6 +7,7 @@ import {
   CREATE_CPMM_POOL_PROGRAM,
   CREATE_CPMM_POOL_FEE_ACC,
   getCpmmPdaAmmConfigId,
+  getCreatePoolKeys,
   type ApiV3PoolInfoStandardItemCpmm,
   type CpmmKeys,
   type ApiV3Token,
@@ -204,7 +205,7 @@ export async function createCpmmPool(
   const mintBAmount = new BN(new Decimal(uiAmountB).mul(10 ** mintB.decimals).toFixed(0))
 
   onStatus?.('Havuz işlemi hazırlanıyor...')
-  const { execute, extInfo } = await raydium.cpmm.createPool({
+  const { execute } = await raydium.cpmm.createPool({
     programId,
     poolFeeAccount,
     mintA: toApiToken(mintA),
@@ -222,11 +223,24 @@ export async function createCpmmPool(
   onStatus?.('Cüzdanınızda onay bekleniyor...')
   const { txId } = await execute({ sendAndConfirm: true })
 
+  // `extInfo.address`, SDK'nın işlem çalıştırılmadan önce döndürdüğü bir
+  // nesne — pratikte bazı alanları (ör. gerçek havuz adresi yerine işlem
+  // içinde açılıp kapatılan geçici bir hesap) güvenilmez çıktı. Bunun
+  // yerine, havuzun kendi programının kullandığı AYNI deterministik PDA
+  // türetme mantığını (getCreatePoolKeys) kendimiz çalıştırıp gerçek
+  // adresleri buluyoruz.
+  const poolKeys = getCreatePoolKeys({
+    programId,
+    configId: new PublicKey(feeConfig.id),
+    mintA: new PublicKey(mintA.address),
+    mintB: new PublicKey(mintB.address),
+  })
+
   return {
     txId,
-    poolId: extInfo.address.poolId.toBase58(),
-    vaultA: extInfo.address.vaultA.toBase58(),
-    vaultB: extInfo.address.vaultB.toBase58(),
+    poolId: poolKeys.poolId.toBase58(),
+    vaultA: poolKeys.vaultA.toBase58(),
+    vaultB: poolKeys.vaultB.toBase58(),
   }
 }
 
