@@ -20,11 +20,24 @@ araştırma sohbet geçmişinde mevcut.
   değiştirecek hiçbir instruction yok — kurucu dahil kimse süreyi
   kısaltamaz, uzatamaz ya da iptal edemez.
 - `swap_buy`: SOL → Token. Kilit durumundan bağımsız, **her zaman** serbest.
-- `swap_sell`: Token → SOL. `Clock::now < pool.unlock_ts` ise **her zaman**
-  reddedilir (`SellLocked` hatası). Süre dolduktan sonra otomatik ve kalıcı
-  olarak herkese açılır — manuel "aç" işlemi yok, gerek de yok.
+- `swap_sell`: Token → SOL. Kilit açık sayılır ancak ve ancak: `Clock::now
+  >= pool.unlock_ts` (otomatik) YA DA `pool.manually_unlocked == true`
+  (erken açma) — ikisinden hangisi önce gerçekleşirse. Her iki durum da tek,
+  global `pool` hesabından okunur; bu instruction'ı kim ne zaman gönderirse
+  göndersin aynı anda aynı sonucu görür.
+- `unlock_now`: Kilidi süresinden önce, tek seferde ve **kalıcı** olarak
+  açar. Sadece `pool.creator` çağırabilir (`has_one` ile zorunlu). Bir kere
+  `true` olduktan sonra `false`'a geri dönüş yok — kısmi/seçici açma
+  (bazı hesaplar için evet, bazıları için hayır) mümkün değil, çünkü
+  `swap_sell` bunu tek global bayraktan okuyor.
 - `add_liquidity` / `remove_liquidity`: Standart, kilitten bağımsız likidite
   ekleme/çekme (LP token karşılığında orantılı pay).
+
+Not: `unlock_now` kurucuya bir güven bağımlılığı geri katıyor (butona hiç
+basmazsa kilit sadece `unlock_ts`'te otomatik açılır — süresiz kilitli
+kalma riski yoktur, çünkü otomatik süre her zaman arka planda çalışır).
+Kurucu isterse hiç kullanmayabilir; tamamen opsiyonel bir "erken aç"
+mekanizması.
 
 ## Deploy durumu
 

@@ -3,7 +3,7 @@ use anchor_lang::system_program::{self, Transfer as SolTransfer};
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer as TokenTransfer};
 
-declare_id!("11111111111111111111111111111111111111112");
+declare_id!("11111111111111111111111111111111");
 
 const POOL_SEED: &[u8] = b"pool";
 const AUTHORITY_SEED: &[u8] = b"authority";
@@ -89,6 +89,7 @@ pub mod locked_pool {
         pool.lp_mint = ctx.accounts.lp_mint.key();
         pool.creator = ctx.accounts.creator.key();
         pool.unlock_ts = unlock_ts;
+        pool.manually_unlocked = false;
         pool.bump = ctx.bumps.pool;
         pool.authority_bump = authority_bump;
 
@@ -310,15 +311,17 @@ pub mod locked_pool {
         Ok(())
     }
 
-    /// Token -> SOL. `pool.unlock_ts` dolmadan bu instruction her zaman
-    /// başarısız olur — kurucu dahil HİÇ KİMSE bunu manuel olarak
-    /// atlatamaz, çünkü kontrol saf zaman karşılaştırması ve `unlock_ts`
-    /// değiştirilemez.
+    /// Token -> SOL. Kilit açık sayılır ancak ve ancak: `pool.unlock_ts`
+    /// dolduysa OTOMATİK OLARAK, YA DA kurucu `unlock_now` ile erken açtıysa.
+    /// İkisi de tek, global `pool` hesabından okunur — bu instruction'ı
+    /// gönderen herkes (kim, ne zaman gönderirse göndersin) aynı anda aynı
+    /// sonucu görür; hiçbir hesap diğerinden önce/sonra açılmaz.
     pub fn swap_sell(ctx: Context<Swap>, token_in: u64, min_sol_out: u64) -> Result<()> {
         require!(token_in > 0, PoolError::InvalidAmount);
 
         let now = Clock::get()?.unix_timestamp;
-        require!(now >= ctx.accounts.pool.unlock_ts, PoolError::SellLocked);
+        let unlocked = now >= ctx.accounts.pool.unlock_ts || ctx.accounts.pool.manually_unlocked;
+        require!(unlocked, PoolError::SellLocked);
 
         let rent_exempt = Rent::get()?.minimum_balance(0);
         let sol_reserve = ctx
@@ -379,6 +382,19 @@ pub mod locked_pool {
 
         Ok(())
     }
+
+    /// Kilidi süresinden ÖNCE, tek seferde ve KALICI olarak açar. Sadece
+    /// `pool.creator` çağırabilir. Bir kere `true` olduktan sonra bunu
+    /// `false`'a geri döndürecek hiçbir instruction yok — yani ne kurucu
+    /// ne de başka biri kilidi yeniden kapatamaz, seçici (bazı hesaplar
+    /// için evet bazıları için hayır) davranamaz. `swap_sell` bu bayrağı
+    /// tek, global kaynak olarak okuduğu için etkisi tüm satıcılar için
+    /// aynı anda başlar.
+    pub fn unlock_now(ctx: Context<UnlockNow>) -> Result<()> {
+        require!(!ctx.accounts.pool.manually_unlocked, PoolError::AlreadyUnlocked);
+        ctx.accounts.pool.manually_unlocked = true;
+        Ok(())
+    }
 }
 
 /// Newton yöntemiyle tamsayı karekök (Uniswap v2'deki ile aynı yaklaşım).
@@ -404,12 +420,15 @@ pub struct Pool {
     /// Unix zaman damgası — bu andan itibaren satış serbest. Havuz
     /// oluşturulduktan sonra bunu değiştirecek hiçbir instruction yok.
     pub unlock_ts: i64,
+    /// `unlock_now` ile tek seferlik, kalıcı erken açma. `false` -> `true`
+    /// yönünde tek yönlü; geri kapatan hiçbir instruction yok.
+    pub manually_unlocked: bool,
     pub bump: u8,
     pub authority_bump: u8,
 }
 
 impl Pool {
-    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 8 + 1 + 1;
+    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 8 + 1 + 1 + 1;
 }
 
 #[derive(Accounts)]
@@ -567,6 +586,21 @@ pub struct Swap<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct UnlockNow<'info> {
+    /// Havuzu oluşturan cüzdan olmalı — `pool.creator` ile eşleşme
+    /// Anchor'ın `has_one` kısıtıyla zorunlu kılınıyor.
+    pub creator: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [POOL_SEED, pool.token_mint.as_ref()],
+        bump = pool.bump,
+        has_one = creator,
+    )]
+    pub pool: Account<'info, Pool>,
+}
+
 #[error_code]
 pub enum PoolError {
     #[msg("Süre 0'dan büyük olmalı.")]
@@ -583,4 +617,6 @@ pub enum PoolError {
     MathOverflow,
     #[msg("Satış kilidi hâlâ aktif — belirlenen süre dolmadan satış yapılamaz.")]
     SellLocked,
+    #[msg("Kilit zaten manuel olarak açılmış.")]
+    AlreadyUnlocked,
 }
