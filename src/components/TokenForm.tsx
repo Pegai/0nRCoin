@@ -24,6 +24,7 @@ const initialState: TokenFormData = {
   revokeMint: false,
   revokeFreeze: false,
   immutable: false,
+  confidentialTransferEnabled: false,
 }
 
 interface Props {
@@ -336,6 +337,23 @@ export function TokenForm({ network }: Props) {
           <div>
             <strong>Metadata'yı Sabitle (Immutable)</strong>
             <small>İsim, sembol ve metadata bir daha güncellenemez.</small>
+          </div>
+        </label>
+
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={form.confidentialTransferEnabled}
+            onChange={(e) => update('confidentialTransferEnabled', e.target.checked)}
+          />
+          <div>
+            <strong>Gizli Miktar Transferi (Confidential Transfer)</strong>
+            <small>
+              Token-2022'nin resmi uzantısıyla, transfer edilen MİKTAR zincirde şifreli tutulur —
+              gönderen/alıcı adresleri her zaman görünür kalır, sadece tutar gizlenir. Etkinleştirirseniz
+              token Token-2022 standardıyla oluşturulur; kullanmak için "Gizli Miktar Transferi"
+              sekmesinden hesabınızı ayrıca yapılandırmanız gerekir.
+            </small>
           </div>
         </label>
       </fieldset>

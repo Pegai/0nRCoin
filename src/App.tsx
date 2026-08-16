@@ -13,7 +13,13 @@ const LiquidityPage = lazy(() =>
   import('./components/LiquidityPage').then((m) => ({ default: m.LiquidityPage })),
 )
 
-type Page = 'create' | 'liquidity'
+// zk-sdk (WASM tabanlı zero-knowledge kanıt kütüphanesi) oldukça büyük
+// olduğu için bu sekmeyi de yalnızca ziyaret edildiğinde ayrı parça olarak yüklüyoruz.
+const ConfidentialTransferPage = lazy(() =>
+  import('./components/ConfidentialTransferPage').then((m) => ({ default: m.ConfidentialTransferPage })),
+)
+
+type Page = 'create' | 'liquidity' | 'privacy'
 
 function App() {
   const [network, setNetwork] = useState<NetworkId>(DEFAULT_NETWORK)
@@ -39,19 +45,34 @@ function App() {
           >
             Likidite Havuzu
           </button>
+          <button
+            type="button"
+            className={`page-tab ${page === 'privacy' ? 'page-tab--active' : ''}`}
+            onClick={() => setPage('privacy')}
+          >
+            Gizli Miktar Transferi
+          </button>
         </nav>
         <main>
-          {page === 'create' ? (
+          {page === 'create' && (
             <>
               <Hero />
               <div className="form-section">
                 <TokenForm network={network} />
               </div>
             </>
-          ) : (
+          )}
+          {page === 'liquidity' && (
             <div className="form-section form-section--wide">
               <Suspense fallback={<div className="alert alert--info">Yükleniyor...</div>}>
                 <LiquidityPage network={network} />
+              </Suspense>
+            </div>
+          )}
+          {page === 'privacy' && (
+            <div className="form-section">
+              <Suspense fallback={<div className="alert alert--info">Yükleniyor...</div>}>
+                <ConfidentialTransferPage network={network} />
               </Suspense>
             </div>
           )}

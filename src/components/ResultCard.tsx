@@ -30,6 +30,13 @@ export function ResultCard({ result, network = 'devnet', onReset }: Props) {
         <code>{result.signature}</code>
       </div>
 
+      {result.confidentialTransferEnabled && (
+        <div className="alert alert--info">
+          🔒 Gizli Miktar Transferi etkin (Token-2022). Kullanmaya başlamak için üstteki "Gizli
+          Miktar Transferi" sekmesinden bu mint adresiyle hesabınızı yapılandırın.
+        </div>
+      )}
+
       <div className="result-card__links">
         <a
           className="btn btn--secondary"

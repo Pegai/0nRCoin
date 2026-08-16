@@ -3,13 +3,18 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   Transaction,
   LAMPORTS_PER_SOL,
 } from '@solana/web3.js'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
 import {
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   MINT_SIZE,
+  ExtensionType,
+  getMintLen,
   getMinimumBalanceForRentExemptMint,
   createInitializeMintInstruction,
   getAssociatedTokenAddressSync,
@@ -21,8 +26,11 @@ import {
 import {
   PROGRAM_ID as METADATA_PROGRAM_ID,
   createCreateMetadataAccountV3Instruction,
+  createCreateInstruction,
+  TokenStandard,
 } from '@metaplex-foundation/mpl-token-metadata'
 import { FEE_WALLET, FEE_AMOUNT_SOL } from '../config'
+import { buildInitializeConfidentialTransferMintIx } from './confidentialTransfer'
 
 export interface TokenFormData {
   name: string
@@ -37,12 +45,17 @@ export interface TokenFormData {
   revokeMint: boolean
   revokeFreeze: boolean
   immutable: boolean
+  // true ise mint, Token-2022 + Confidential Transfer uzantısıyla oluşturulur
+  // (bkz. src/lib/confidentialTransfer.ts) — transfer miktarı zincirde şifreli
+  // tutulur. 0 = normal SPL Token.
+  confidentialTransferEnabled: boolean
 }
 
 export interface CreateTokenResult {
   mint: string
   signature: string
   tokenAccount: string
+  confidentialTransferEnabled: boolean
 }
 
 function findMetadataPda(mint: PublicKey): PublicKey {
@@ -75,10 +88,30 @@ export async function createToken(
   const decimals = data.decimals
   const supplyRaw = BigInt(data.supply) * BigInt(10) ** BigInt(decimals)
 
-  onStatus?.('Kira (rent) hesaplanıyor...')
-  const rentLamports = await getMinimumBalanceForRentExemptMint(connection)
+  // Confidential Transfer seçilmişse mint, Token-2022 + o uzantıyla
+  // oluşturulur (bkz. src/lib/confidentialTransfer.ts); aksi halde normal
+  // (legacy) SPL Token programı kullanılır.
+  const confidentialTransferEnabled = data.confidentialTransferEnabled
+  const tokenProgramId = confidentialTransferEnabled ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
 
-  const associatedTokenAccount = getAssociatedTokenAddressSync(mint, payer)
+  onStatus?.('Kira (rent) hesaplanıyor...')
+  let mintSpace: number
+  let rentLamports: number
+  if (confidentialTransferEnabled) {
+    mintSpace = getMintLen([ExtensionType.ConfidentialTransferMint])
+    rentLamports = await connection.getMinimumBalanceForRentExemption(mintSpace)
+  } else {
+    mintSpace = MINT_SIZE
+    rentLamports = await getMinimumBalanceForRentExemptMint(connection)
+  }
+
+  const associatedTokenAccount = getAssociatedTokenAddressSync(
+    mint,
+    payer,
+    false,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  )
   const metadataPda = findMetadataPda(mint)
 
   const tx = new Transaction()
@@ -88,55 +121,119 @@ export async function createToken(
     SystemProgram.createAccount({
       fromPubkey: payer,
       newAccountPubkey: mint,
-      space: MINT_SIZE,
+      space: mintSpace,
       lamports: rentLamports,
-      programId: TOKEN_PROGRAM_ID,
+      programId: tokenProgramId,
     }),
-    createInitializeMintInstruction(mint, decimals, payer, payer, TOKEN_PROGRAM_ID),
   )
 
+  // Confidential Transfer uzantısı, mint'in kendisi initialize edilmeden
+  // ÖNCE ayarlanmalıdır (Token-2022 uzantı kuralı).
+  if (confidentialTransferEnabled) {
+    tx.add(buildInitializeConfidentialTransferMintIx(mint, payer))
+  }
+
+  tx.add(createInitializeMintInstruction(mint, decimals, payer, payer, tokenProgramId))
+
   // 2) Cüzdan için ilişkili token hesabı (ATA) oluştur
-  tx.add(createAssociatedTokenAccountInstruction(payer, associatedTokenAccount, payer, mint))
-
-  // 3) Toplam arzı bastır (mint) ve cüzdana gönder
-  tx.add(createMintToInstruction(mint, associatedTokenAccount, payer, supplyRaw))
-
-  // 4) Metaplex Token Metadata hesabı (isim/sembol/logo/açıklama on-chain referansı)
   tx.add(
-    createCreateMetadataAccountV3Instruction(
-      {
-        metadata: metadataPda,
-        mint,
-        mintAuthority: payer,
-        payer,
-        updateAuthority: payer,
-      },
-      {
-        createMetadataAccountArgsV3: {
-          data: {
-            name: data.name,
-            symbol: data.symbol,
-            uri: data.imageUri || '',
-            sellerFeeBasisPoints: 0,
-            creators: null,
-            collection: null,
-            uses: null,
-          },
-          isMutable: !data.immutable,
-          collectionDetails: null,
-        },
-      },
+    createAssociatedTokenAccountInstruction(
+      payer,
+      associatedTokenAccount,
+      payer,
+      mint,
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
     ),
   )
 
+  // 3) Toplam arzı bastır (mint) ve cüzdana gönder
+  tx.add(createMintToInstruction(mint, associatedTokenAccount, payer, supplyRaw, [], tokenProgramId))
+
+  // 4) Metaplex Token Metadata hesabı (isim/sembol/logo/açıklama on-chain referansı)
+  //
+  // Token-2022 mint'ler (özellikle Confidential Transfer gibi "kısıtlayıcı"
+  // uzantıları olanlar) için eski CreateMetadataAccountV3 talimatı, mint'i
+  // otomatik olarak "Programmable NFT" sanıp reddediyor (0x99 hatası).
+  // Bunun yerine, token programını açıkça belirtebildiğimiz ve token
+  // standardını "Fungible" olarak işaretleyebildiğimiz daha yeni, birleşik
+  // "Create" talimatını kullanıyoruz — bu, hem legacy SPL Token hem
+  // Token-2022 mint'lerle doğru çalışıyor.
+  if (confidentialTransferEnabled) {
+    tx.add(
+      createCreateInstruction(
+        {
+          metadata: metadataPda,
+          mint,
+          authority: payer,
+          payer,
+          updateAuthority: payer,
+          systemProgram: SystemProgram.programId,
+          sysvarInstructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+          splTokenProgram: tokenProgramId,
+        },
+        {
+          createArgs: {
+            __kind: 'V1',
+            assetData: {
+              name: data.name,
+              symbol: data.symbol,
+              uri: data.imageUri || '',
+              sellerFeeBasisPoints: 0,
+              creators: null,
+              primarySaleHappened: false,
+              isMutable: !data.immutable,
+              tokenStandard: TokenStandard.Fungible,
+              collection: null,
+              uses: null,
+              collectionDetails: null,
+              ruleSet: null,
+            },
+            decimals,
+            printSupply: null,
+          },
+        },
+      ),
+    )
+  } else {
+    tx.add(
+      createCreateMetadataAccountV3Instruction(
+        {
+          metadata: metadataPda,
+          mint,
+          mintAuthority: payer,
+          payer,
+          updateAuthority: payer,
+        },
+        {
+          createMetadataAccountArgsV3: {
+            data: {
+              name: data.name,
+              symbol: data.symbol,
+              uri: data.imageUri || '',
+              sellerFeeBasisPoints: 0,
+              creators: null,
+              collection: null,
+              uses: null,
+            },
+            isMutable: !data.immutable,
+            collectionDetails: null,
+          },
+        },
+      ),
+    )
+  }
+
   // 5) Opsiyonel: mint yetkisini kaldır (arz sabitlenir, artık yeni token basılamaz)
   if (data.revokeMint) {
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens, null))
+    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.MintTokens, null, [], tokenProgramId))
   }
 
   // 6) Opsiyonel: freeze yetkisini kaldır
   if (data.revokeFreeze) {
-    tx.add(createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, null))
+    tx.add(
+      createSetAuthorityInstruction(mint, payer, AuthorityType.FreezeAccount, null, [], tokenProgramId),
+    )
   }
 
   // 7) Opsiyonel hizmet ücreti (yalnızca site sahibi FEE_WALLET tanımladıysa eklenir)
@@ -171,5 +268,6 @@ export async function createToken(
     mint: mint.toBase58(),
     signature,
     tokenAccount: associatedTokenAccount.toBase58(),
+    confidentialTransferEnabled,
   }
 }
