@@ -303,12 +303,38 @@ function PoolCreate({
     try {
       // Havuz oluşturma çağrısının döndürdüğü kasa adresleri yerine,
       // havuzu zincirden ID'siyle tekrar okuyup gerçek (doğrulanmış) kasa
-      // adreslerini kullanıyoruz — daha güvenilir.
-      setSellLockStatus('Havuz kasaları doğrulanıyor...')
+      // adreslerini kullanıyoruz — daha güvenilir. Havuz daha yeni
+      // oluşturulduğu için, bağlı olduğumuz RPC sunucusu henüz güncel
+      // olmayabilir — birkaç kez, artan bekleme süreleriyle tekrar deniyoruz.
       const raydium = await loadRaydium(connection, wallet, network)
-      const { poolKeys } = await getPoolById(raydium, result.poolId, network)
+      let poolKeys: Awaited<ReturnType<typeof getPoolById>>['poolKeys']
+      const retryDelaysMs = [1000, 2000, 4000, 6000]
+      let lastErr: unknown
+      for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+        setSellLockStatus(
+          attempt === 0
+            ? 'Havuz kasaları doğrulanıyor...'
+            : `Havuz kasaları doğrulanıyor (tekrar deneniyor ${attempt}/${retryDelaysMs.length})...`,
+        )
+        try {
+          const res = await getPoolById(raydium, result.poolId, network)
+          if (res.poolKeys) {
+            poolKeys = res.poolKeys
+            break
+          }
+        } catch (err) {
+          lastErr = err
+        }
+        if (attempt < retryDelaysMs.length) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]))
+        }
+      }
       if (!poolKeys) {
-        throw new Error('Havuz kasa adresleri okunamadı, tekrar deneyin.')
+        throw new Error(
+          lastErr instanceof Error
+            ? `Havuz kasa adresleri okunamadı: ${lastErr.message}. Birkaç saniye bekleyip tekrar deneyin.`
+            : 'Havuz kasa adresleri okunamadı, birkaç saniye bekleyip tekrar deneyin.',
+        )
       }
 
       const sig = await registerLaunch(
