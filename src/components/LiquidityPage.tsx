@@ -301,12 +301,22 @@ function PoolCreate({
     }
     setSellLockBusy(true)
     try {
+      // Havuz oluşturma çağrısının döndürdüğü kasa adresleri yerine,
+      // havuzu zincirden ID'siyle tekrar okuyup gerçek (doğrulanmış) kasa
+      // adreslerini kullanıyoruz — daha güvenilir.
+      setSellLockStatus('Havuz kasaları doğrulanıyor...')
+      const raydium = await loadRaydium(connection, wallet, network)
+      const { poolKeys } = await getPoolById(raydium, result.poolId, network)
+      if (!poolKeys) {
+        throw new Error('Havuz kasa adresleri okunamadı, tekrar deneyin.')
+      }
+
       const sig = await registerLaunch(
         connection,
         wallet,
         new PublicKey(sellLockMint),
-        new PublicKey(result.vaultA),
-        new PublicKey(result.vaultB),
+        new PublicKey(poolKeys.vault.A),
+        new PublicKey(poolKeys.vault.B),
         sellLockDuration,
         setSellLockStatus,
       )
