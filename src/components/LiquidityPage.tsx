@@ -329,7 +329,19 @@ function PoolCreate({
           await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]))
         }
       }
-      if (!poolKeys) {
+      // Zincirden okuma tüm denemelere rağmen başarısız olduysa, havuz
+      // oluşturma çağrısının bu SEÇ oturumda döndürdüğü (taze) kasa
+      // adreslerini yedek olarak kullan.
+      let vaultA: string
+      let vaultB: string
+      if (poolKeys) {
+        vaultA = poolKeys.vault.A
+        vaultB = poolKeys.vault.B
+      } else if (result.vaultA && result.vaultB) {
+        setSellLockStatus('Zincirden okunamadı, oluşturma işlemindeki kasa adresleri kullanılıyor...')
+        vaultA = result.vaultA
+        vaultB = result.vaultB
+      } else {
         throw new Error(
           lastErr instanceof Error
             ? `Havuz kasa adresleri okunamadı: ${lastErr.message}. Birkaç saniye bekleyip tekrar deneyin.`
@@ -341,8 +353,8 @@ function PoolCreate({
         connection,
         wallet,
         new PublicKey(sellLockMint),
-        new PublicKey(poolKeys.vault.A),
-        new PublicKey(poolKeys.vault.B),
+        new PublicKey(vaultA),
+        new PublicKey(vaultB),
         sellLockDuration,
         setSellLockStatus,
       )
