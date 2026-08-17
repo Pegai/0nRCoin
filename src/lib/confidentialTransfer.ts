@@ -80,7 +80,11 @@ export function buildInitializeConfidentialTransferMintIx(
 ): TransactionInstruction {
   const data = Buffer.concat([
     authority ? authority.toBuffer() : Buffer.alloc(32), // authority (None = tüm sıfır)
-    Buffer.from([0]), // auto_approve_new_accounts = false (kendi hesabını kendin onaylarsın)
+    // auto_approve_new_accounts = true: kapalı olursa her yeni hesabın mint
+    // yetkilisi tarafından ayrıca `ApproveAccount` ile onaylanması gerekir
+    // (KYC/uyum senaryoları için) — bizim basit, herkese açık kullanım
+    // senaryomuzda bu gereksiz bir engel, o yüzden herkesi otomatik onaylıyoruz.
+    Buffer.from([1]),
     Buffer.alloc(32), // auditor_elgamal_pubkey = None (denetçi yok)
   ])
   return buildInstruction(CT_IX.InitializeMint, data, [{ pubkey: mint, isSigner: false, isWritable: true }])
