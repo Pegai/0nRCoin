@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
+import { PublicKey } from '@solana/web3.js'
 import type { ApiV3PoolInfoStandardItemCpmm, CpmmKeys } from '@raydium-io/raydium-sdk-v2'
 import {
   NATIVE_SOL_MINT,
@@ -16,6 +17,8 @@ import {
   type PoolSummary,
 } from '../lib/raydium'
 import { LOCK_DURATION_OPTIONS, lockLpTokens, type LockResult } from '../lib/lock'
+import { getTokenMetadata } from '../lib/tokenMetadata'
+import { CoinPicker } from './CoinPicker'
 import { NETWORKS, type NetworkId } from '../config'
 
 interface Props {
@@ -27,6 +30,24 @@ type SubTab = 'search' | 'create' | 'manage' | 'lock'
 function fmtNum(n: number, digits = 6): string {
   if (!Number.isFinite(n)) return '-'
   return n.toLocaleString('tr-TR', { maximumFractionDigits: digits })
+}
+
+/**
+ * Havuzun toplam değerini SOL cinsinden hesaplar — yalnızca havuzun bir
+ * tarafı SOL ise mümkün (sabit-çarpım havuzlarda iki taraf her zaman eşit
+ * değerdedir, o yüzden SOL tarafının 2 katı toplam değeri verir). Havuz
+ * SOL içermiyorsa (ör. iki farklı token eşleşmesi), fiyat verisi olmadan
+ * SOL karşılığı hesaplanamaz.
+ */
+function poolValueInSol(poolInfo: {
+  mintA: { address: string }
+  mintB: { address: string }
+  mintAmountA: number
+  mintAmountB: number
+}): number | null {
+  if (poolInfo.mintA.address === NATIVE_SOL_MINT) return poolInfo.mintAmountA * 2
+  if (poolInfo.mintB.address === NATIVE_SOL_MINT) return poolInfo.mintAmountB * 2
+  return null
 }
 
 export function LiquidityPage({ network }: Props) {
@@ -179,6 +200,12 @@ function PoolSearch({ network }: { network: NetworkId }) {
                   {p.mintB.symbol}
                 </span>
               </div>
+              {poolValueInSol(p) !== null && (
+                <div className="pool-card__row">
+                  <span>Havuz Değeri</span>
+                  <span>{fmtNum(poolValueInSol(p)!, 4)} SOL</span>
+                </div>
+              )}
               <div className="pool-card__row">
                 <span>İşlem Ücreti</span>
                 <span>%{fmtNum(p.feeRatePct, 3)}</span>
@@ -214,12 +241,54 @@ function PoolCreate({
 }) {
   const [mintAAddr, setMintAAddr] = useState('')
   const [mintBAddr, setMintBAddr] = useState('')
+  const [mintAMeta, setMintAMeta] = useState<{ name: string; symbol: string } | null>(null)
+  const [mintBMeta, setMintBMeta] = useState<{ name: string; symbol: string } | null>(null)
   const [amountA, setAmountA] = useState('')
   const [amountB, setAmountB] = useState('')
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<CreatePoolResult | null>(null)
+
+  useEffect(() => {
+    if (!mintAAddr) {
+      setMintAMeta(null)
+      return
+    }
+    if (mintAAddr === NATIVE_SOL_MINT) {
+      setMintAMeta({ name: 'Solana', symbol: 'SOL' })
+      return
+    }
+    let cancelled = false
+    try {
+      getTokenMetadata(connection, new PublicKey(mintAAddr)).then((meta) => !cancelled && setMintAMeta(meta))
+    } catch {
+      setMintAMeta(null)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [connection, mintAAddr])
+
+  useEffect(() => {
+    if (!mintBAddr) {
+      setMintBMeta(null)
+      return
+    }
+    if (mintBAddr === NATIVE_SOL_MINT) {
+      setMintBMeta({ name: 'Solana', symbol: 'SOL' })
+      return
+    }
+    let cancelled = false
+    try {
+      getTokenMetadata(connection, new PublicKey(mintBAddr)).then((meta) => !cancelled && setMintBMeta(meta))
+    } catch {
+      setMintBMeta(null)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [connection, mintBAddr])
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
@@ -327,33 +396,39 @@ function PoolCreate({
       </div>
 
       <div className="form-grid">
-        <label className="field">
-          <span>Token A Mint Adresi *</span>
-          <input
-            type="text"
-            placeholder="ör. kendi token'ınızın mint adresi"
-            value={mintAAddr}
-            onChange={(e) => setMintAAddr(e.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span>Token B Mint Adresi *</span>
-          <input
-            type="text"
-            placeholder="ör. SOL mint adresi"
-            value={mintBAddr}
-            onChange={(e) => setMintBAddr(e.target.value)}
-          />
-        </label>
+        <div className="field">
+          <span>Token A *</span>
+          {mintAAddr ? (
+            <div className="pool-card" style={{ marginTop: 4 }}>
+              <div className="pool-card__row">
+                <span>{mintAMeta ? `${mintAMeta.name} (${mintAMeta.symbol})` : 'Seçili'}</span>
+                <button type="button" className="btn btn--secondary" onClick={() => setMintAAddr('')}>
+                  Değiştir
+                </button>
+              </div>
+              <code className="pool-card__id">{mintAAddr}</code>
+            </div>
+          ) : (
+            <CoinPicker allowSol onSelect={setMintAAddr} />
+          )}
+        </div>
+        <div className="field">
+          <span>Token B *</span>
+          {mintBAddr ? (
+            <div className="pool-card" style={{ marginTop: 4 }}>
+              <div className="pool-card__row">
+                <span>{mintBMeta ? `${mintBMeta.name} (${mintBMeta.symbol})` : 'Seçili'}</span>
+                <button type="button" className="btn btn--secondary" onClick={() => setMintBAddr('')}>
+                  Değiştir
+                </button>
+              </div>
+              <code className="pool-card__id">{mintBAddr}</code>
+            </div>
+          ) : (
+            <CoinPicker allowSol onSelect={setMintBAddr} />
+          )}
+        </div>
       </div>
-      <button
-        type="button"
-        className="btn btn--secondary"
-        style={{ marginBottom: 16 }}
-        onClick={() => setMintBAddr(NATIVE_SOL_MINT)}
-      >
-        Token B olarak SOL kullan
-      </button>
 
       <div className="form-grid">
         <label className="field">
@@ -561,6 +636,12 @@ function PoolManage({
               {fmtNum(poolInfo.mintAmountB, 4)} {poolInfo.mintB.symbol}
             </span>
           </div>
+          {poolValueInSol(poolInfo) !== null && (
+            <div className="pool-card__row">
+              <span>Havuz Değeri</span>
+              <span>{fmtNum(poolValueInSol(poolInfo)!, 4)} SOL</span>
+            </div>
+          )}
 
           <hr className="pool-manage__divider" />
 
@@ -812,6 +893,12 @@ function PoolLock({
               {poolInfo.mintA.symbol || '?'} / {poolInfo.mintB.symbol || '?'}
             </strong>
           </div>
+          {poolValueInSol(poolInfo) !== null && (
+            <div className="pool-card__row">
+              <span>Havuz Değeri</span>
+              <span>{fmtNum(poolValueInSol(poolInfo)!, 4)} SOL</span>
+            </div>
+          )}
           <div className="pool-card__row">
             <span>LP Bakiyeniz</span>
             <span>{fmtNum(lpBalance, 6)}</span>

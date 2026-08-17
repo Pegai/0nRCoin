@@ -588,36 +588,5 @@ export function planConfidentialTransfer(
   return { instructions, newDecryptedBalance: newBalance }
 }
 
-export interface WalletToken2022Account {
-  mint: string
-  tokenAccount: string
-  uiAmount: string
-  decimals: number
-}
-
-/**
- * Bağlı cüzdanın sahip olduğu tüm Token-2022 hesaplarını listeler (herkese
- * açık bakiyeleriyle) — "gönderilecek coin" seçim listesini doldurmak için.
- * Confidential Transfer için yapılandırılmış olup olmadığına bakmaz; bu
- * kontrol, kullanıcı bir coin seçtiğinde ayrıca yapılır.
- */
-export async function listWalletToken2022Accounts(
-  connection: Connection,
-  owner: PublicKey,
-): Promise<WalletToken2022Account[]> {
-  const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
-    programId: TOKEN_2022_PROGRAM_ID,
-  })
-  return value
-    .map(({ pubkey, account }) => {
-      const info = account.data.parsed?.info
-      if (!info) return null
-      return {
-        mint: info.mint as string,
-        tokenAccount: pubkey.toBase58(),
-        uiAmount: (info.tokenAmount?.uiAmountString as string) ?? '0',
-        decimals: (info.tokenAmount?.decimals as number) ?? 0,
-      }
-    })
-    .filter((x): x is WalletToken2022Account => x !== null)
-}
+// Cüzdan token listesi artık src/lib/walletTokens.ts'te (hem legacy SPL hem
+// Token-2022 için ortak, LiquidityPage'in coin seçicisiyle de paylaşılıyor).

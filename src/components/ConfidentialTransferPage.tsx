@@ -9,6 +9,8 @@ import {
 } from '@solana/spl-token'
 import { PubkeyValidityProofData } from '@solana/zk-sdk/bundler'
 import { getMintInfo } from '../lib/raydium'
+import { getTokenMetadata } from '../lib/tokenMetadata'
+import { CoinPicker } from './CoinPicker'
 import {
   buildApplyPendingBalanceIx,
   buildConfigureAccountIx,
@@ -19,10 +21,8 @@ import {
   deriveConfidentialKeys,
   getConfidentialAccountState,
   getConfidentialTokenAccount,
-  listWalletToken2022Accounts,
   planConfidentialTransfer,
   type DerivedConfidentialKeys,
-  type WalletToken2022Account,
 } from '../lib/confidentialTransfer'
 import type { NetworkId } from '../config'
 
@@ -54,13 +54,8 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
   const { connection } = useConnection()
   const wallet = useWallet()
 
-  // Cüzdandaki Token-2022 coin'leri (seçim listesi)
-  const [walletTokens, setWalletTokens] = useState<WalletToken2022Account[] | null>(null)
-  const [tokensLoading, setTokensLoading] = useState(false)
-  const [tokensError, setTokensError] = useState('')
-
   const [mintAddr, setMintAddr] = useState('')
-  const [manualMint, setManualMint] = useState('')
+  const [selectedMeta, setSelectedMeta] = useState<{ name: string; symbol: string } | null>(null)
 
   // Seçilen coin için hesap durumu
   const [decimals, setDecimals] = useState<number | null>(null)
@@ -87,17 +82,22 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!wallet.publicKey) {
-      setWalletTokens(null)
+    if (!mintAddr) {
+      setSelectedMeta(null)
       return
     }
-    setTokensLoading(true)
-    setTokensError('')
-    listWalletToken2022Accounts(connection, wallet.publicKey)
-      .then(setWalletTokens)
-      .catch((err) => setTokensError(err instanceof Error ? err.message : 'Token listesi alınamadı.'))
-      .finally(() => setTokensLoading(false))
-  }, [connection, wallet.publicKey])
+    let cancelled = false
+    try {
+      getTokenMetadata(connection, new PublicKey(mintAddr)).then((meta) => {
+        if (!cancelled) setSelectedMeta(meta)
+      })
+    } catch {
+      setSelectedMeta(null)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [connection, mintAddr])
 
   function resetMintState() {
     setDecimals(null)
@@ -343,67 +343,19 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
       {!mintAddr && (
         <div className="pool-manage__section" style={{ marginTop: 20 }}>
           <div className="pool-manage__section-title">Coin Seç</div>
-          {tokensLoading && <p className="subtab-desc">Cüzdanınızdaki token'lar yükleniyor...</p>}
-          {tokensError && <div className="alert alert--error">{tokensError}</div>}
-          {!wallet.connected && <p className="subtab-desc">Devam etmek için önce cüzdanınızı bağlayın.</p>}
-          {walletTokens && walletTokens.length === 0 && (
-            <p className="subtab-desc">Cüzdanınızda Token-2022 coin'i bulunamadı.</p>
-          )}
-          {walletTokens && walletTokens.length > 0 && (
-            <div className="pool-list">
-              {walletTokens.map((t) => (
-                <button
-                  type="button"
-                  key={t.tokenAccount}
-                  className="pool-card"
-                  style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
-                  onClick={() => selectMint(t.mint)}
-                >
-                  <div className="pool-card__row">
-                    <span>Mint</span>
-                    <code className="pool-card__id">{t.mint}</code>
-                  </div>
-                  <div className="pool-card__row">
-                    <span>Bakiye</span>
-                    <span>{t.uiAmount}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (manualMint.trim()) selectMint(manualMint.trim())
-            }}
-            style={{ marginTop: 16 }}
-          >
-            <label className="field">
-              <span>Ya da mint adresini yapıştırın</span>
-              <input
-                type="text"
-                placeholder="Confidential Transfer ile oluşturulmuş token'ın mint adresi"
-                value={manualMint}
-                onChange={(e) => setManualMint(e.target.value)}
-              />
-            </label>
-            <small>
-              Bu token'dan hiç sahip değilseniz ve sadece gizlice birinden almaya hazırlanıyorsanız
-              (alıcı tarafı), mint adresini buraya yapıştırıp aşağıdaki "Hesabı Yapılandır" adımını
-              çalıştırmanız yeterli — miktar belirtmenize gerek yok.
-            </small>
-            <button type="submit" className="btn btn--secondary" style={{ marginTop: 8 }}>
-              Bu Mint'i Kullan
-            </button>
-          </form>
+          <p className="subtab-desc">
+            Bu token'dan hiç sahip değilseniz ve sadece gizlice birinden almaya hazırlanıyorsanız
+            (alıcı tarafı), mint adresini aşağıya yapıştırıp sonraki adımda "Hesabı Yapılandır"ı
+            çalıştırmanız yeterli — miktar belirtmenize gerek yok.
+          </p>
+          <CoinPicker token2022Only onSelect={selectMint} />
         </div>
       )}
 
       {mintAddr && (
         <div className="pool-manage__section" style={{ marginTop: 20 }}>
           <div className="pool-manage__section-title">
-            Seçili Coin
+            {selectedMeta ? `${selectedMeta.name} (${selectedMeta.symbol})` : 'Seçili Coin'}
             <button
               type="button"
               className="btn btn--secondary"
