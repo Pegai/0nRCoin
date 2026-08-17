@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { Connection, PublicKey, Transaction } from '@solana/web3.js'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
@@ -11,9 +11,14 @@ import {
   buildDepositIx,
   buildReallocateForConfidentialTransferIx,
   buildVerifyPubkeyValidityIx,
+  decryptAeBalance,
   deriveConfidentialKeys,
+  getConfidentialAccountState,
   getConfidentialTokenAccount,
+  listWalletToken2022Accounts,
+  planConfidentialTransfer,
   type DerivedConfidentialKeys,
+  type WalletToken2022Account,
 } from '../lib/confidentialTransfer'
 import type { NetworkId } from '../config'
 
@@ -26,11 +31,11 @@ interface Props {
 // Yüksek bir sabit seçiyoruz; asıl sınır zincirde protokol tarafından kontrol ediliyor.
 const MAX_PENDING_BALANCE_CREDIT_COUNTER = 65536n
 
-async function sendTx(
-  connection: Connection,
-  wallet: WalletContextState,
-  tx: Transaction,
-): Promise<string> {
+function fmtAmount(raw: bigint, decimals: number): string {
+  return (Number(raw) / 10 ** decimals).toLocaleString('tr-TR')
+}
+
+async function sendTx(connection: Connection, wallet: WalletContextState, tx: Transaction): Promise<string> {
   if (!wallet.publicKey || !wallet.signTransaction) throw new Error('Cüzdan bağlı değil.')
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
   tx.recentBlockhash = blockhash
@@ -45,47 +50,100 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
   const { connection } = useConnection()
   const wallet = useWallet()
 
-  const [mintAddr, setMintAddr] = useState('')
-  const [decimals, setDecimals] = useState<number | null>(null)
-  const [keys, setKeys] = useState<DerivedConfidentialKeys | null>(null)
-  const [tokenAccount, setTokenAccount] = useState<PublicKey | null>(null)
+  // Cüzdandaki Token-2022 coin'leri (seçim listesi)
+  const [walletTokens, setWalletTokens] = useState<WalletToken2022Account[] | null>(null)
+  const [tokensLoading, setTokensLoading] = useState(false)
+  const [tokensError, setTokensError] = useState('')
 
-  const [depositAmount, setDepositAmount] = useState('')
-  const [appliedBalance, setAppliedBalance] = useState<bigint | null>(null)
+  const [mintAddr, setMintAddr] = useState('')
+  const [manualMint, setManualMint] = useState('')
+
+  // Seçilen coin için hesap durumu
+  const [decimals, setDecimals] = useState<number | null>(null)
+  const [tokenAccount, setTokenAccount] = useState<PublicKey | null>(null)
+  const [keys, setKeys] = useState<DerivedConfidentialKeys | null>(null)
+  const [accountConfigured, setAccountConfigured] = useState<boolean | null>(null)
+  const [currentBalance, setCurrentBalance] = useState<bigint | null>(null)
+  const [checkingAccount, setCheckingAccount] = useState(false)
 
   const [configureBusy, setConfigureBusy] = useState(false)
   const [configureTx, setConfigureTx] = useState('')
+
+  const [depositAmount, setDepositAmount] = useState('')
   const [depositBusy, setDepositBusy] = useState(false)
   const [depositTx, setDepositTx] = useState('')
   const [applyBusy, setApplyBusy] = useState(false)
   const [applyTx, setApplyTx] = useState('')
+
+  const [sendAmount, setSendAmount] = useState('')
+  const [recipientAddr, setRecipientAddr] = useState('')
+  const [sendBusy, setSendBusy] = useState(false)
+  const [sendTxSig, setSendTxSig] = useState('')
+
   const [error, setError] = useState('')
 
-  function reset() {
-    setKeys(null)
-    setTokenAccount(null)
+  useEffect(() => {
+    if (!wallet.publicKey) {
+      setWalletTokens(null)
+      return
+    }
+    setTokensLoading(true)
+    setTokensError('')
+    listWalletToken2022Accounts(connection, wallet.publicKey)
+      .then(setWalletTokens)
+      .catch((err) => setTokensError(err instanceof Error ? err.message : 'Token listesi alınamadı.'))
+      .finally(() => setTokensLoading(false))
+  }, [connection, wallet.publicKey])
+
+  function resetMintState() {
     setDecimals(null)
+    setTokenAccount(null)
+    setKeys(null)
+    setAccountConfigured(null)
+    setCurrentBalance(null)
     setConfigureTx('')
+    setDepositAmount('')
     setDepositTx('')
     setApplyTx('')
-    setAppliedBalance(null)
+    setSendAmount('')
+    setRecipientAddr('')
+    setSendTxSig('')
     setError('')
   }
 
-  async function handleLookupAndConfigure(e: FormEvent) {
+  function selectMint(addr: string) {
+    resetMintState()
+    setMintAddr(addr)
+  }
+
+  async function refreshBalance(ata: PublicKey, derivedKeys: DerivedConfidentialKeys) {
+    try {
+      const state = await getConfidentialAccountState(connection, ata)
+      setAccountConfigured(state.approved)
+      if (state.approved) {
+        setCurrentBalance(decryptAeBalance(derivedKeys.ae, state.decryptableAvailableBalance))
+      }
+    } catch {
+      setAccountConfigured(false)
+      setCurrentBalance(null)
+    }
+  }
+
+  async function handleCheckAccount(e: FormEvent) {
     e.preventDefault()
     setError('')
     if (!wallet.connected || !wallet.publicKey) {
       setError('Devam etmek için önce cüzdanınızı bağlayın.')
       return
     }
-    if (!mintAddr.trim()) {
-      setError('Mint adresi girin.')
+    const addr = mintAddr.trim()
+    if (!addr) {
+      setError('Bir coin seçin ya da mint adresi girin.')
       return
     }
-    setConfigureBusy(true)
+    setCheckingAccount(true)
     try {
-      const mintInfo = await getMintInfo(connection, mintAddr.trim())
+      const mintInfo = await getMintInfo(connection, addr)
       if (mintInfo.programId !== TOKEN_2022_PROGRAM_ID.toBase58()) {
         throw new Error(
           'Bu mint Token-2022 değil. Gizli miktar transferi yalnızca "Gizli Miktar Transferi" seçeneğiyle oluşturulmuş token\'larda çalışır.',
@@ -93,30 +151,45 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
       }
       setDecimals(mintInfo.decimals)
 
-      const mint = new PublicKey(mintAddr.trim())
+      const mint = new PublicKey(addr)
       const ata = getConfidentialTokenAccount(mint, wallet.publicKey)
       setTokenAccount(ata)
 
       const derivedKeys = await deriveConfidentialKeys(wallet, ata)
       setKeys(derivedKeys)
 
-      const reallocIx = buildReallocateForConfidentialTransferIx(ata, wallet.publicKey, wallet.publicKey)
-      const proofData = new PubkeyValidityProofData(derivedKeys.elgamal)
+      await refreshBalance(ata, derivedKeys)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Hesap kontrol edilirken bir hata oluştu.')
+    } finally {
+      setCheckingAccount(false)
+    }
+  }
+
+  async function handleConfigure() {
+    if (!keys || !tokenAccount || !wallet.publicKey) return
+    setError('')
+    setConfigureBusy(true)
+    try {
+      const mint = new PublicKey(mintAddr.trim())
+      const reallocIx = buildReallocateForConfidentialTransferIx(tokenAccount, wallet.publicKey, wallet.publicKey)
+      const proofData = new PubkeyValidityProofData(keys.elgamal)
       const proofIx = buildVerifyPubkeyValidityIx(proofData.toBytes())
-      const decryptableZeroBalance = derivedKeys.ae.encrypt(0n).toBytes()
+      const decryptableZeroBalance = keys.ae.encrypt(0n).toBytes()
       const configureIx = buildConfigureAccountIx(
-        ata,
+        tokenAccount,
         mint,
         wallet.publicKey,
         decryptableZeroBalance,
         MAX_PENDING_BALANCE_CREDIT_COUNTER,
       )
-
-      // Sıra önemli: proofIx, configureIx'ten hemen önce olmalı (bkz.
-      // buildConfigureAccountIx'teki proof_instruction_offset = -1).
+      // Sıra önemli: proofIx, configureIx'ten hemen önce olmalı.
       const tx = new Transaction().add(reallocIx, proofIx, configureIx)
       const sig = await sendTx(connection, wallet, tx)
       setConfigureTx(sig)
+      setAccountConfigured(true)
+      setCurrentBalance(0n)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Hesap yapılandırılırken bir hata oluştu.')
@@ -149,26 +222,91 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
   }
 
   async function handleApplyPendingBalance() {
-    if (!keys || !tokenAccount || decimals === null || !wallet.publicKey) return
+    if (!keys || !tokenAccount || !wallet.publicKey) return
     setError('')
     setApplyBusy(true)
     try {
-      // Basitlik için: hesap yeni yapılandırıldı ve tam olarak bir Deposit
-      // yapıldı varsayıyoruz (bekleyen kredi sayacı = 1, önceki bakiye 0).
-      // Zincirdeki gerçek hesabı okuyup birden fazla yatırım/transferi
-      // toplayan genel bir sürüm — sonraki aşama.
-      const amountRaw = BigInt(Math.round(Number(depositAmount) * 10 ** decimals))
-      const newDecryptableBalance = keys.ae.encrypt(amountRaw).toBytes()
-      const ix = buildApplyPendingBalanceIx(tokenAccount, wallet.publicKey, 1n, newDecryptableBalance)
+      const state = await getConfidentialAccountState(connection, tokenAccount)
+      const currentDecrypted = decryptAeBalance(keys.ae, state.decryptableAvailableBalance)
+      const depositedRaw =
+        decimals !== null && depositAmount ? BigInt(Math.round(Number(depositAmount) * 10 ** decimals)) : 0n
+      const newBalance = currentDecrypted + depositedRaw
+      const newDecryptableBalance = keys.ae.encrypt(newBalance).toBytes()
+      const ix = buildApplyPendingBalanceIx(
+        tokenAccount,
+        wallet.publicKey,
+        state.pendingBalanceCreditCounter,
+        newDecryptableBalance,
+      )
       const tx = new Transaction().add(ix)
       const sig = await sendTx(connection, wallet, tx)
       setApplyTx(sig)
-      setAppliedBalance(amountRaw)
+      setCurrentBalance(newBalance)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Bekleyen bakiye uygulanırken bir hata oluştu.')
     } finally {
       setApplyBusy(false)
+    }
+  }
+
+  async function handleSend(e: FormEvent) {
+    e.preventDefault()
+    if (!keys || !tokenAccount || decimals === null || !wallet.publicKey) return
+    setError('')
+    if (!sendAmount || Number(sendAmount) <= 0) {
+      setError('Geçerli bir miktar girin.')
+      return
+    }
+    let recipientPubkey: PublicKey
+    try {
+      recipientPubkey = new PublicKey(recipientAddr.trim())
+    } catch {
+      setError('Geçersiz alıcı cüzdan adresi.')
+      return
+    }
+    setSendBusy(true)
+    try {
+      const mint = new PublicKey(mintAddr.trim())
+      const recipientAta = getConfidentialTokenAccount(mint, recipientPubkey)
+
+      let recipientState
+      try {
+        recipientState = await getConfidentialAccountState(connection, recipientAta)
+      } catch {
+        throw new Error(
+          'Alıcının bu token için hesabı yok ya da gizli transfere yapılandırılmamış. Alıcının önce kendi cüzdanıyla bu mint adresi için "Coin\'i Kullan" + "Hesabı Yapılandır" adımlarını çalıştırması gerekiyor.',
+        )
+      }
+      if (!recipientState.approved) {
+        throw new Error('Alıcının hesabı henüz onaylanmamış.')
+      }
+
+      const sourceState = await getConfidentialAccountState(connection, tokenAccount)
+      const amountRaw = BigInt(Math.round(Number(sendAmount) * 10 ** decimals))
+
+      const plan = planConfidentialTransfer(
+        tokenAccount,
+        mint,
+        recipientAta,
+        wallet.publicKey,
+        keys,
+        sourceState.availableBalance,
+        sourceState.decryptableAvailableBalance,
+        recipientState.elgamalPubkey,
+        amountRaw,
+      )
+
+      const tx = new Transaction().add(...plan.instructions)
+      const sig = await sendTx(connection, wallet, tx)
+      setSendTxSig(sig)
+      setCurrentBalance(plan.newDecryptedBalance)
+      setSendAmount('')
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Gizli transfer başarısız oldu.')
+    } finally {
+      setSendBusy(false)
     }
   }
 
@@ -182,104 +320,194 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
         değildir, sadece tutarı gizler.
       </p>
       <div className="alert alert--warning">
-        ⚠️ Bu, ilk aşama (Faz 1): hesabı yapılandırma + yatırma (deposit) + bekleyen bakiyeyi
-        uygulama. Geri çekme (withdraw) ve kişiden kişiye gizli transfer, ek zk-proof adımları
-        gerektirdiği için henüz eklenmedi. Yalnızca <strong>Devnet</strong>'te, "Gizli Miktar
-        Transferi" seçeneğiyle oluşturulmuş bir token ile test edin.
+        ⚠️ Yalnızca <strong>Devnet</strong>'te, "Gizli Miktar Transferi" seçeneğiyle oluşturulmuş bir
+        token ile test edin. Gizli göndermek istediğiniz alıcının da, aynı token için önceden bu
+        sayfadan kendi hesabını yapılandırmış olması gerekir.
       </div>
 
-      <form onSubmit={handleLookupAndConfigure}>
-        <label className="field">
-          <span>Token Mint Adresi *</span>
-          <input
-            type="text"
-            placeholder="Confidential Transfer ile oluşturulmuş token'ınızın mint adresi"
-            value={mintAddr}
-            onChange={(e) => {
-              setMintAddr(e.target.value)
-              reset()
+      {!mintAddr && (
+        <div className="pool-manage__section" style={{ marginTop: 20 }}>
+          <div className="pool-manage__section-title">Coin Seç</div>
+          {tokensLoading && <p className="subtab-desc">Cüzdanınızdaki token'lar yükleniyor...</p>}
+          {tokensError && <div className="alert alert--error">{tokensError}</div>}
+          {!wallet.connected && <p className="subtab-desc">Devam etmek için önce cüzdanınızı bağlayın.</p>}
+          {walletTokens && walletTokens.length === 0 && (
+            <p className="subtab-desc">Cüzdanınızda Token-2022 coin'i bulunamadı.</p>
+          )}
+          {walletTokens && walletTokens.length > 0 && (
+            <div className="pool-list">
+              {walletTokens.map((t) => (
+                <button
+                  type="button"
+                  key={t.tokenAccount}
+                  className="pool-card"
+                  style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
+                  onClick={() => selectMint(t.mint)}
+                >
+                  <div className="pool-card__row">
+                    <span>Mint</span>
+                    <code className="pool-card__id">{t.mint}</code>
+                  </div>
+                  <div className="pool-card__row">
+                    <span>Bakiye</span>
+                    <span>{t.uiAmount}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (manualMint.trim()) selectMint(manualMint.trim())
             }}
-          />
-        </label>
-        <button type="submit" className="btn btn--primary" disabled={configureBusy || !!configureTx}>
-          {configureBusy ? 'Yapılandırılıyor...' : configureTx ? '1. Hesap Yapılandırıldı ✓' : '1. Hesabı Yapılandır'}
-        </button>
-      </form>
-
-      {error && <div className="alert alert--error" style={{ marginTop: 16 }}>{error}</div>}
-
-      {configureTx && (
-        <div className="pool-manage__section" style={{ marginTop: 20 }}>
-          <div className="pool-manage__section-title">2. Bakiye Yatır (Deposit)</div>
-          <p className="subtab-desc">
-            Herkese açık bakiyenizden, gizli ("pending") bakiyeye aktarır. Bu adımda miktar henüz
-            zincirde açık — sonraki adımda ("bekleyen bakiyeyi uygula") şifrelenmiş hale gelir.
-          </p>
-          <div className="pool-manage__amount-row">
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="ör. 100"
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(e.target.value.replace(/[^\d.]/g, ''))}
-              disabled={!!depositTx}
-            />
-          </div>
-          <button
-            type="button"
-            className="btn btn--primary pool-manage__action-btn"
-            onClick={handleDeposit}
-            disabled={depositBusy || !!depositTx}
+            style={{ marginTop: 16 }}
           >
-            {depositBusy ? 'Yatırılıyor...' : depositTx ? 'Yatırıldı ✓' : 'Yatır'}
-          </button>
+            <label className="field">
+              <span>Ya da mint adresini yapıştırın</span>
+              <input
+                type="text"
+                placeholder="Confidential Transfer ile oluşturulmuş token'ın mint adresi"
+                value={manualMint}
+                onChange={(e) => setManualMint(e.target.value)}
+              />
+            </label>
+            <button type="submit" className="btn btn--secondary">
+              Bu Mint'i Kullan
+            </button>
+          </form>
         </div>
       )}
 
-      {depositTx && (
+      {mintAddr && (
         <div className="pool-manage__section" style={{ marginTop: 20 }}>
-          <div className="pool-manage__section-title">3. Bekleyen Bakiyeyi Uygula</div>
-          <p className="subtab-desc">
-            Yatırdığınız miktarı kullanılabilir gizli bakiyenize işler. Bundan sonra bu hesabın
-            bakiyesi zincirde yalnızca şifreli olarak görünür — Solscan'de tutarı göremezsiniz,
-            sadece siz (ve türetilmiş anahtarınızla) çözebilirsiniz.
-          </p>
-          <button
-            type="button"
-            className="btn btn--primary pool-manage__action-btn"
-            onClick={handleApplyPendingBalance}
-            disabled={applyBusy || !!applyTx}
-          >
-            {applyBusy ? 'Uygulanıyor...' : applyTx ? 'Uygulandı ✓' : 'Uygula'}
-          </button>
+          <div className="pool-manage__section-title">
+            Seçili Coin
+            <button
+              type="button"
+              className="btn btn--secondary"
+              style={{ marginLeft: 12 }}
+              onClick={() => {
+                resetMintState()
+                setMintAddr('')
+              }}
+            >
+              Değiştir
+            </button>
+          </div>
+          <code className="pool-card__id">{mintAddr}</code>
+
+          {!keys && (
+            <form onSubmit={handleCheckAccount} style={{ marginTop: 12 }}>
+              <button type="submit" className="btn btn--primary" disabled={checkingAccount}>
+                {checkingAccount ? 'Kontrol Ediliyor...' : "Coin'i Kullan"}
+              </button>
+            </form>
+          )}
         </div>
       )}
 
-      {applyTx && appliedBalance !== null && decimals !== null && (
-        <div className="result-card" style={{ marginTop: 20 }}>
-          <div className="result-card__icon">🔒</div>
-          <h2>Gizli Bakiye Oluşturuldu!</h2>
-          <p>
-            Şifrelenmiş kullanılabilir bakiyeniz (yalnızca sizin çözebileceğiniz):{' '}
-            <strong>{(Number(appliedBalance) / 10 ** decimals).toLocaleString('tr-TR')}</strong> token.
-          </p>
-          <div className="result-card__row">
-            <span>Hesap Yapılandırma İşlemi</span>
-            <code>{configureTx}</code>
-          </div>
-          <div className="result-card__row">
-            <span>Yatırma İşlemi</span>
-            <code>{depositTx}</code>
-          </div>
-          <div className="result-card__row">
-            <span>Uygulama İşlemi</span>
-            <code>{applyTx}</code>
-          </div>
-          <p className="subtab-desc">
-            Bu üç işlemi Solscan/Explorer'da açıp inceleyebilirsiniz — hiçbirinde token miktarını
-            düz metin olarak göremezsiniz, sadece şifreli baytlar.
-          </p>
+      {error && (
+        <div className="alert alert--error" style={{ marginTop: 16 }}>
+          {error}
         </div>
+      )}
+
+      {keys && tokenAccount && accountConfigured === false && (
+        <div className="pool-manage__section" style={{ marginTop: 20 }}>
+          <div className="pool-manage__section-title">Hesabı Yapılandır</div>
+          <p className="subtab-desc">
+            Bu token hesabınız henüz gizli transfer için yapılandırılmamış. Devam etmeden önce bir
+            kerelik yapılandırma gerekiyor.
+          </p>
+          <button type="button" className="btn btn--primary" onClick={handleConfigure} disabled={configureBusy}>
+            {configureBusy ? 'Yapılandırılıyor...' : 'Hesabı Yapılandır'}
+          </button>
+          {configureTx && <div className="alert alert--info">Yapılandırıldı ✓ İşlem: {configureTx}</div>}
+        </div>
+      )}
+
+      {keys && tokenAccount && accountConfigured && (
+        <>
+          <div className="pool-manage__section" style={{ marginTop: 20 }}>
+            <div className="pool-manage__section-title">
+              Gizli Bakiyeniz
+              <small className="pool-manage__balance-hint">
+                {' '}
+                {currentBalance !== null && decimals !== null ? fmtAmount(currentBalance, decimals) : '...'} token
+              </small>
+            </div>
+          </div>
+
+          <form onSubmit={handleSend} className="pool-manage__section" style={{ marginTop: 20 }}>
+            <div className="pool-manage__section-title">Gizlice Gönder</div>
+            <p className="subtab-desc">
+              Alıcının, bu token için hesabını daha önce bu sayfadan yapılandırmış olması gerekir.
+            </p>
+            <label className="field">
+              <span>Alıcı Cüzdan Adresi</span>
+              <input
+                type="text"
+                placeholder="Alıcının Solana cüzdan adresi"
+                value={recipientAddr}
+                onChange={(e) => setRecipientAddr(e.target.value)}
+              />
+            </label>
+            <div className="pool-manage__amount-row">
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="Gönderilecek miktar"
+                value={sendAmount}
+                onChange={(e) => setSendAmount(e.target.value.replace(/[^\d.]/g, ''))}
+              />
+            </div>
+            <button type="submit" className="btn btn--primary pool-manage__action-btn" disabled={sendBusy}>
+              {sendBusy ? 'Gönderiliyor...' : 'Gizlice Gönder'}
+            </button>
+            {sendTxSig && (
+              <div className="alert alert--info" style={{ marginTop: 12 }}>
+                🔒 Gönderildi. İşlem: <code>{sendTxSig}</code>
+              </div>
+            )}
+          </form>
+
+          <div className="pool-manage__section" style={{ marginTop: 20 }}>
+            <div className="pool-manage__section-title">Herkese Açık Bakiyeden Yatır</div>
+            <p className="subtab-desc">
+              Normal (herkese açık) bakiyenizden gizli bakiyeye ek yatırım yapmak isterseniz.
+            </p>
+            <div className="pool-manage__amount-row">
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="ör. 100"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value.replace(/[^\d.]/g, ''))}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn--secondary pool-manage__action-btn"
+              onClick={handleDeposit}
+              disabled={depositBusy || !!depositTx}
+            >
+              {depositBusy ? 'Yatırılıyor...' : depositTx ? 'Yatırıldı ✓' : 'Yatır'}
+            </button>
+            {depositTx && (
+              <button
+                type="button"
+                className="btn btn--primary pool-manage__action-btn"
+                onClick={handleApplyPendingBalance}
+                disabled={applyBusy || !!applyTx}
+                style={{ marginTop: 8 }}
+              >
+                {applyBusy ? 'Uygulanıyor...' : applyTx ? 'Bekleyen Bakiye Uygulandı ✓' : 'Bekleyen Bakiyeyi Uygula'}
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   )

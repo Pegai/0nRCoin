@@ -1,12 +1,27 @@
-import { PublicKey, SystemProgram, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
+import { Connection, PublicKey, SystemProgram, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
 import {
   TOKEN_2022_PROGRAM_ID,
   ExtensionType,
+  getAccount,
+  getExtensionData,
   getAssociatedTokenAddressSync,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from '@solana/spl-token'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
-import { ConfidentialKeys, type AeKey, type ElGamalKeypair } from '@solana/zk-sdk/bundler'
+import {
+  ConfidentialKeys,
+  AeCiphertext,
+  ElGamalCiphertext,
+  ElGamalPubkey,
+  PedersenOpening,
+  GroupedElGamalCiphertext3Handles,
+  BatchedGroupedCiphertext3HandlesValidityProofData,
+  BatchedRangeProofU128Data,
+  CiphertextCommitmentEqualityProofData,
+  type AeKey,
+  type ElGamalKeypair,
+} from '@solana/zk-sdk/bundler'
+import { RistrettoPoint } from '@noble/curves/ed25519.js'
 
 // Token-2022'nin "Confidential Transfer" extension'ı (miktarı şifreler,
 // gönderen/alıcı adresini DEĞİL). Bu dosyadaki instruction encoder'lar,
@@ -30,15 +45,27 @@ const CT_IX = {
   InitializeMint: 0,
   ConfigureAccount: 2,
   Deposit: 5,
+  Transfer: 7,
   ApplyPendingBalance: 8,
 } as const
 
 // ProofInstruction (zk_elgamal_proof programı) discriminant'ları
 const PROOF_IX = {
+  VerifyCiphertextCommitmentEquality: 3,
   VerifyPubkeyValidity: 4,
+  VerifyBatchedRangeProofU128: 7,
+  VerifyBatchedGroupedCiphertext3HandlesValidity: 12,
 } as const
 
 const AE_CIPHERTEXT_LEN = 36 // solana-zk-sdk-pod encryption/mod.rs
+const ELGAMAL_CIPHERTEXT_LEN = 64 // solana-zk-sdk-pod encryption/mod.rs
+const ELGAMAL_PUBKEY_LEN = 32
+// spl-token-confidential-transfer-proof-generation: transfer miktarı, ayrı ayrı
+// şifrelenip ispatlanabilmesi için düşük (16 bit) ve yüksek (32 bit) parçalara bölünüyor.
+const TRANSFER_AMOUNT_LO_BITS = 16
+const TRANSFER_AMOUNT_HI_BITS = 32
+const REMAINING_BALANCE_BIT_LENGTH = 64
+const RANGE_PROOF_PADDING_BIT_LENGTH = 16
 
 function u64LE(value: bigint): Buffer {
   const buf = Buffer.alloc(8)
@@ -259,4 +286,338 @@ export async function deriveConfidentialKeys(
   const signature = await wallet.signMessage(message)
   const keys = ConfidentialKeys.fromSignature(signature)
   return { elgamal: keys.elgamal(), ae: keys.ae() }
+}
+
+// ============================================================================
+// Kişiden kişiye gizli transfer (Faz 2)
+//
+// Token-2022'nin Transfer instruction'ı, göndericinin "yeni bakiyesi"nin
+// negatif olmadığını ve şifreli tutarların doğru şekilde şifrelendiğini
+// kanıtlayan 3 ayrı zk-proof gerektiriyor. Bu proof'ları üretmenin resmi
+// tarifi (`spl-token-confidential-transfer-proof-generation` crate,
+// transfer.rs) zincirdeki mevcut şifreli bakiyeden transfer tutarını
+// HOMOMORFİK OLARAK ÇIKARMAYI gerektiriyor — ama @solana/zk-sdk (v0.5.1,
+// en güncel sürüm) bu çıkarma işlemini (ElGamal şifreli metin aritmetiği)
+// henüz dışa açmıyor, sadece Pedersen taahhüdü aritmetiğini açıyor.
+//
+// Bu eksik parçayı, iyi denetlenmiş bir eliptik eğri kütüphanesiyle
+// (@noble/curves, Ristretto255 — Solana'nın kullandığı AYNI eğri)
+// dolduruyoruz: şifreli metnin taahhüt (commitment) ve çözme tutamacı
+// (decrypt handle) bileşenleri sadece birer Ristretto noktası, ikisi de
+// standart nokta toplama/çıkarma/skaler çarpma ile işleniyor — egzotik bir
+// şey değil. Bu yaklaşım yerel olarak uçtan uca doğrulandı: manuel çıkarma
+// ile üretilen sonuç, zk-sdk'nin kendi proof.verify() fonksiyonlarını
+// başarıyla geçiyor.
+// ============================================================================
+
+function pointFromBytes(bytes: Uint8Array) {
+  return RistrettoPoint.fromBytes(bytes)
+}
+
+function point32Sub(a: Uint8Array, b: Uint8Array): Uint8Array {
+  return pointFromBytes(a).subtract(pointFromBytes(b)).toBytes()
+}
+
+function point32Add(a: Uint8Array, b: Uint8Array): Uint8Array {
+  return pointFromBytes(a).add(pointFromBytes(b)).toBytes()
+}
+
+function point32Mul(a: Uint8Array, scalar: bigint): Uint8Array {
+  return pointFromBytes(a).multiply(scalar).toBytes()
+}
+
+/**
+ * 64 byte'lık bir ElGamal şifreli metni (32 byte taahhüt + 32 byte çözme
+ * tutamacı) diğer bir şifreli metinden çıkarır — her iki bileşeni de ayrı
+ * ayrı Ristretto nokta çıkarması olarak işler.
+ */
+function ciphertextSubtract(a: Uint8Array, b: Uint8Array): Uint8Array {
+  return Buffer.concat([
+    Buffer.from(point32Sub(a.slice(0, 32), b.slice(0, 32))),
+    Buffer.from(point32Sub(a.slice(32, 64), b.slice(32, 64))),
+  ])
+}
+
+function ciphertextAdd(a: Uint8Array, b: Uint8Array): Uint8Array {
+  return Buffer.concat([
+    Buffer.from(point32Add(a.slice(0, 32), b.slice(0, 32))),
+    Buffer.from(point32Add(a.slice(32, 64), b.slice(32, 64))),
+  ])
+}
+
+function ciphertextMultiplyByU64(a: Uint8Array, scalar: bigint): Uint8Array {
+  return Buffer.concat([
+    Buffer.from(point32Mul(a.slice(0, 32), scalar)),
+    Buffer.from(point32Mul(a.slice(32, 64), scalar)),
+  ])
+}
+
+/** `ciphertext_lo + ciphertext_hi * 2^bitLength` (bkz. `try_combine_lo_hi_ciphertexts`). */
+function combineLoHiCiphertext(lo: Uint8Array, hi: Uint8Array, bitLength: number): Uint8Array {
+  return ciphertextAdd(lo, ciphertextMultiplyByU64(hi, 1n << BigInt(bitLength)))
+}
+
+export interface ConfidentialAccountState {
+  approved: boolean
+  elgamalPubkey: Uint8Array
+  availableBalance: Uint8Array
+  decryptableAvailableBalance: Uint8Array
+  pendingBalanceCreditCounter: bigint
+}
+
+/** `decryptableAvailableBalance`/`decryptableZeroBalance` gibi AE (AES) şifreli bir bakiyeyi çözer. */
+export function decryptAeBalance(aeKey: AeKey, bytes: Uint8Array): bigint {
+  const ciphertext = AeCiphertext.fromBytes(bytes)
+  if (!ciphertext) throw new Error('Şifreli bakiye çözülemedi (bozuk veri).')
+  const amount = ciphertext.decrypt(aeKey)
+  if (amount === undefined) throw new Error('Şifreli bakiye çözülemedi — türetilen anahtar bu hesaba ait olmayabilir.')
+  return amount
+}
+
+/**
+ * Bir token hesabının Confidential Transfer extension durumunu zincirden
+ * okur (`ConfidentialTransferAccount` struct, mod.rs:66 — sabit boyutlu
+ * alanlar, byte byte doğrulanmış offsetler).
+ */
+export async function getConfidentialAccountState(
+  connection: Connection,
+  tokenAccount: PublicKey,
+): Promise<ConfidentialAccountState> {
+  const account = await getAccount(connection, tokenAccount, 'confirmed', TOKEN_2022_PROGRAM_ID)
+  const ext = getExtensionData(ExtensionType.ConfidentialTransferAccount, account.tlvData)
+  if (!ext) {
+    throw new Error('Bu hesap gizli transfer için yapılandırılmamış (önce "Hesabı Yapılandır" adımını çalıştırın).')
+  }
+  let o = 0
+  const approved = ext[o] === 1
+  o += 1
+  const elgamalPubkey = ext.subarray(o, o + ELGAMAL_PUBKEY_LEN)
+  o += ELGAMAL_PUBKEY_LEN
+  o += ELGAMAL_CIPHERTEXT_LEN // pending_balance_lo (kullanılmıyor)
+  o += ELGAMAL_CIPHERTEXT_LEN // pending_balance_hi (kullanılmıyor)
+  const availableBalance = ext.subarray(o, o + ELGAMAL_CIPHERTEXT_LEN)
+  o += ELGAMAL_CIPHERTEXT_LEN
+  const decryptableAvailableBalance = ext.subarray(o, o + AE_CIPHERTEXT_LEN)
+  o += AE_CIPHERTEXT_LEN
+  o += 1 // allow_confidential_credits (kullanılmıyor)
+  o += 1 // allow_non_confidential_credits (kullanılmıyor)
+  const pendingBalanceCreditCounter = ext.readBigUInt64LE(o)
+  return { approved, elgamalPubkey, availableBalance, decryptableAvailableBalance, pendingBalanceCreditCounter }
+}
+
+function buildProofInstruction(discriminant: number, proofBytes: Uint8Array): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: ZK_ELGAMAL_PROOF_PROGRAM_ID,
+    keys: [],
+    data: Buffer.concat([Buffer.from([discriminant]), Buffer.from(proofBytes)]),
+  })
+}
+
+/**
+ * `TransferInstructionData` (instruction.rs:601): new_source_decryptable_available_balance
+ * (AeCiphertext, 36B), transfer_amount_auditor_ciphertext_lo (64B),
+ * transfer_amount_auditor_ciphertext_hi (64B), equality/validity/range proof
+ * offset'leri (her biri i8, -3/-2/-1 — bu 3 proof, bu instruction'dan hemen
+ * önce, bu sırayla eklenmiş olmalı). Toplam 167 byte.
+ */
+function buildTransferInstruction(
+  sourceTokenAccount: PublicKey,
+  mint: PublicKey,
+  destinationTokenAccount: PublicKey,
+  owner: PublicKey,
+  newSourceDecryptableBalance: Uint8Array,
+  auditorCiphertextLo: Uint8Array,
+  auditorCiphertextHi: Uint8Array,
+): TransactionInstruction {
+  const offsets = Buffer.alloc(3)
+  offsets.writeInt8(-3, 0) // equality proof: 3 instruction önce
+  offsets.writeInt8(-2, 1) // validity proof: 2 instruction önce
+  offsets.writeInt8(-1, 2) // range proof: 1 instruction önce
+  const data = Buffer.concat([
+    Buffer.from(newSourceDecryptableBalance),
+    Buffer.from(auditorCiphertextLo),
+    Buffer.from(auditorCiphertextHi),
+    offsets,
+  ])
+  return buildInstruction(CT_IX.Transfer, data, [
+    { pubkey: sourceTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: mint, isSigner: false, isWritable: false },
+    { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
+    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: owner, isSigner: true, isWritable: false },
+  ])
+}
+
+export interface ConfidentialTransferPlan {
+  instructions: TransactionInstruction[]
+  newDecryptedBalance: bigint
+}
+
+/**
+ * Bir gizli transferin tüm proof'larını üretir ve gönderilecek instruction
+ * listesini (sırayla: equality proof, validity proof, range proof,
+ * transfer) hazırlar. Tarif `spl-token-confidential-transfer-proof-
+ * generation` crate'inin `transfer_split_proof_data` fonksiyonuyla birebir
+ * aynı — tek fark, zincirdeki mevcut bakiyeden tutarı çıkarma adımını
+ * (`@solana/zk-sdk`'de dışa açılmamıyor) yukarıdaki `ciphertextSubtract` ile
+ * yapıyoruz.
+ */
+export function planConfidentialTransfer(
+  sourceTokenAccount: PublicKey,
+  mint: PublicKey,
+  destinationTokenAccount: PublicKey,
+  owner: PublicKey,
+  sourceKeys: DerivedConfidentialKeys,
+  currentAvailableBalanceCiphertext: Uint8Array,
+  currentDecryptableAvailableBalance: Uint8Array,
+  destinationElGamalPubkeyBytes: Uint8Array,
+  transferAmount: bigint,
+): ConfidentialTransferPlan {
+  const currentDecryptableCt = AeCiphertext.fromBytes(currentDecryptableAvailableBalance)
+  if (!currentDecryptableCt) throw new Error('Mevcut bakiye çözülemedi (bozuk AE şifreli metin).')
+  const currentBalance = currentDecryptableCt.decrypt(sourceKeys.ae)
+  if (currentBalance === undefined) {
+    throw new Error('Mevcut bakiye çözülemedi — türetilen anahtar bu hesaba ait olmayabilir.')
+  }
+  if (transferAmount > currentBalance) {
+    throw new Error(
+      `Yetersiz gizli bakiye: ${currentBalance} birim var, ${transferAmount} birim göndermeye çalışıyorsunuz.`,
+    )
+  }
+  const newBalance = currentBalance - transferAmount
+
+  const sourcePubkey = sourceKeys.elgamal.pubkey()
+  const destPubkey = ElGamalPubkey.fromBytes(destinationElGamalPubkeyBytes)
+  // Mint'te denetçi (auditor) tanımlı değil — Rust tarafındaki
+  // `ElGamalPubkey::default()` ile eşleşen, tüm sıfırlardan oluşan
+  // "boş" ElGamal public key kullanılıyor (bkz. protokolün MaybeNull
+  // sentinel kuralı — yerel olarak doğrulandı: sıfır baytlar geçerli
+  // şekilde decode oluyor).
+  const auditorPubkey = ElGamalPubkey.fromBytes(new Uint8Array(ELGAMAL_PUBKEY_LEN))
+
+  const loMask = (1n << BigInt(TRANSFER_AMOUNT_LO_BITS)) - 1n
+  const amountLo = transferAmount & loMask
+  const amountHi = transferAmount >> BigInt(TRANSFER_AMOUNT_LO_BITS)
+
+  const openingLo = new PedersenOpening()
+  const openingHi = new PedersenOpening()
+  const newOpening = new PedersenOpening()
+  const paddingOpening = new PedersenOpening()
+
+  const groupedLo = GroupedElGamalCiphertext3Handles.encryptWith(
+    sourcePubkey,
+    destPubkey,
+    auditorPubkey,
+    amountLo,
+    openingLo,
+  )
+  const groupedHi = GroupedElGamalCiphertext3Handles.encryptWith(
+    sourcePubkey,
+    destPubkey,
+    auditorPubkey,
+    amountHi,
+    openingHi,
+  )
+
+  // Göndericinin kendi görüşünden lo/hi şifreli metinler (grouped ciphertext
+  // ile aynı taahhüt/opening çiftini kullanır — taahhüt hangi alıcı
+  // anahtarıyla şifrelendiğinden bağımsızdır).
+  const sourceCtLo = sourcePubkey.encryptWith(amountLo, openingLo)
+  const sourceCtHi = sourcePubkey.encryptWith(amountHi, openingHi)
+  const combinedSourceCt = combineLoHiCiphertext(
+    sourceCtLo.toBytes(),
+    sourceCtHi.toBytes(),
+    TRANSFER_AMOUNT_LO_BITS,
+  )
+  const newBalanceCtBytes = ciphertextSubtract(currentAvailableBalanceCiphertext, combinedSourceCt)
+  const newBalanceCt = ElGamalCiphertext.fromBytes(newBalanceCtBytes)
+  if (!newBalanceCt) throw new Error('Yeni bakiye şifreli metni oluşturulamadı.')
+
+  const newCommitment = sourcePubkey.encryptWith(newBalance, newOpening).commitment()
+
+  const equalityProof = new CiphertextCommitmentEqualityProofData(
+    sourceKeys.elgamal,
+    newBalanceCt,
+    newCommitment,
+    newOpening,
+    newBalance,
+  )
+  const validityProof = new BatchedGroupedCiphertext3HandlesValidityProofData(
+    sourcePubkey,
+    destPubkey,
+    auditorPubkey,
+    groupedLo,
+    groupedHi,
+    amountLo,
+    amountHi,
+    openingLo,
+    openingHi,
+  )
+  const paddingCommitment = sourcePubkey.encryptWith(0n, paddingOpening).commitment()
+  const rangeProof = new BatchedRangeProofU128Data(
+    [newCommitment, sourceCtLo.commitment(), sourceCtHi.commitment(), paddingCommitment],
+    new BigUint64Array([newBalance, amountLo, amountHi, 0n]),
+    new Uint8Array([
+      REMAINING_BALANCE_BIT_LENGTH,
+      TRANSFER_AMOUNT_LO_BITS,
+      TRANSFER_AMOUNT_HI_BITS,
+      RANGE_PROOF_PADDING_BIT_LENGTH,
+    ]),
+    [newOpening, openingLo, openingHi, paddingOpening],
+  )
+
+  const newSourceDecryptableBalance = sourceKeys.ae.encrypt(newBalance).toBytes()
+  const auditorCiphertextLo = auditorPubkey.encryptWith(amountLo, openingLo).toBytes()
+  const auditorCiphertextHi = auditorPubkey.encryptWith(amountHi, openingHi).toBytes()
+
+  const instructions = [
+    buildProofInstruction(PROOF_IX.VerifyCiphertextCommitmentEquality, equalityProof.toBytes()),
+    buildProofInstruction(PROOF_IX.VerifyBatchedGroupedCiphertext3HandlesValidity, validityProof.toBytes()),
+    buildProofInstruction(PROOF_IX.VerifyBatchedRangeProofU128, rangeProof.toBytes()),
+    buildTransferInstruction(
+      sourceTokenAccount,
+      mint,
+      destinationTokenAccount,
+      owner,
+      newSourceDecryptableBalance,
+      auditorCiphertextLo,
+      auditorCiphertextHi,
+    ),
+  ]
+
+  return { instructions, newDecryptedBalance: newBalance }
+}
+
+export interface WalletToken2022Account {
+  mint: string
+  tokenAccount: string
+  uiAmount: string
+  decimals: number
+}
+
+/**
+ * Bağlı cüzdanın sahip olduğu tüm Token-2022 hesaplarını listeler (herkese
+ * açık bakiyeleriyle) — "gönderilecek coin" seçim listesini doldurmak için.
+ * Confidential Transfer için yapılandırılmış olup olmadığına bakmaz; bu
+ * kontrol, kullanıcı bir coin seçtiğinde ayrıca yapılır.
+ */
+export async function listWalletToken2022Accounts(
+  connection: Connection,
+  owner: PublicKey,
+): Promise<WalletToken2022Account[]> {
+  const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
+    programId: TOKEN_2022_PROGRAM_ID,
+  })
+  return value
+    .map(({ pubkey, account }) => {
+      const info = account.data.parsed?.info
+      if (!info) return null
+      return {
+        mint: info.mint as string,
+        tokenAccount: pubkey.toBase58(),
+        uiAmount: (info.tokenAmount?.uiAmountString as string) ?? '0',
+        decimals: (info.tokenAmount?.decimals as number) ?? 0,
+      }
+    })
+    .filter((x): x is WalletToken2022Account => x !== null)
 }
