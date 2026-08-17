@@ -9,6 +9,7 @@ import {
   buildApplyPendingBalanceIx,
   buildConfigureAccountIx,
   buildDepositIx,
+  buildReallocateForConfidentialTransferIx,
   buildVerifyPubkeyValidityIx,
   deriveConfidentialKeys,
   getConfidentialTokenAccount,
@@ -99,6 +100,7 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
       const derivedKeys = await deriveConfidentialKeys(wallet, ata)
       setKeys(derivedKeys)
 
+      const reallocIx = buildReallocateForConfidentialTransferIx(ata, wallet.publicKey, wallet.publicKey)
       const proofData = new PubkeyValidityProofData(derivedKeys.elgamal)
       const proofIx = buildVerifyPubkeyValidityIx(proofData.toBytes())
       const decryptableZeroBalance = derivedKeys.ae.encrypt(0n).toBytes()
@@ -110,7 +112,9 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
         MAX_PENDING_BALANCE_CREDIT_COUNTER,
       )
 
-      const tx = new Transaction().add(proofIx, configureIx)
+      // Sıra önemli: proofIx, configureIx'ten hemen önce olmalı (bkz.
+      // buildConfigureAccountIx'teki proof_instruction_offset = -1).
+      const tx = new Transaction().add(reallocIx, proofIx, configureIx)
       const sig = await sendTx(connection, wallet, tx)
       setConfigureTx(sig)
     } catch (err) {

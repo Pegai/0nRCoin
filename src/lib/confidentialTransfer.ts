@@ -1,5 +1,10 @@
-import { PublicKey, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
-import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token'
+import { PublicKey, SystemProgram, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
+import {
+  TOKEN_2022_PROGRAM_ID,
+  ExtensionType,
+  getAssociatedTokenAddressSync,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
 import { ConfidentialKeys, type AeKey, type ElGamalKeypair } from '@solana/zk-sdk/bundler'
 
@@ -16,6 +21,9 @@ export const ZK_ELGAMAL_PROOF_PROGRAM_ID = new PublicKey(
 
 // TokenInstruction enum'unda ConfidentialTransferExtension'ın discriminant'ı (instruction.rs:1116)
 const TOKEN_INSTRUCTION_CONFIDENTIAL_TRANSFER_EXTENSION = 27
+
+// TokenInstruction enum'unda Reallocate'in discriminant'ı (instruction.rs:923)
+const TOKEN_INSTRUCTION_REALLOCATE = 29
 
 // ConfidentialTransferInstruction alt-discriminant'ları (instruction.rs, enum sırası)
 const CT_IX = {
@@ -79,8 +87,36 @@ export function buildInitializeConfidentialTransferMintIx(
 }
 
 /**
- * Hesabı confidential transfer için yapılandırır. Aynı transaction'da hemen
- * ÖNCESİNDE bir `VerifyPubkeyValidity` proof instruction'ı olmalı (bkz.
+ * Token hesabının veri alanını, `ConfidentialTransferAccount` extension'ının
+ * verisini sığdıracak şekilde büyütür. `ConfigureAccount`'tan ÖNCE, ayrı bir
+ * instruction olarak gönderilmesi ZORUNLU — aksi halde `ConfigureAccount`
+ * "InvalidAccountData" hatasıyla başarısız olur (hesap, yeni extension için
+ * yer ayrılmadan yazılmaya çalışılıyor). Bkz. `TokenInstruction::Reallocate`
+ * (instruction.rs:618) — data: [29, ...her extension için 2 byte LE u16].
+ */
+export function buildReallocateForConfidentialTransferIx(
+  tokenAccount: PublicKey,
+  payer: PublicKey,
+  owner: PublicKey,
+): TransactionInstruction {
+  const extensionTypeLE = Buffer.alloc(2)
+  extensionTypeLE.writeUInt16LE(ExtensionType.ConfidentialTransferAccount)
+  return new TransactionInstruction({
+    programId: TOKEN_2022_PROGRAM_ID,
+    keys: [
+      { pubkey: tokenAccount, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.concat([Buffer.from([TOKEN_INSTRUCTION_REALLOCATE]), extensionTypeLE]),
+  })
+}
+
+/**
+ * Hesabı confidential transfer için yapılandırır. ÖNCESİNDE aynı
+ * transaction'da sırasıyla `buildReallocateForConfidentialTransferIx` ve bir
+ * `VerifyPubkeyValidity` proof instruction'ı olmalı (bkz.
  * `buildVerifyPubkeyValidityIx`) — `proofInstructionOffset` bu instruction'a
  * göre o proof'un göreli konumu (biz her zaman bir önceki instruction'a
  * koyduğumuz için sabit `-1`).
