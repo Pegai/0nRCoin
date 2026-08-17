@@ -192,8 +192,17 @@ export interface DerivedConfidentialKeys {
  * ElGamal + AES anahtarlarını, cüzdanın bir mesajı imzalamasından
  * DETERMİNİSTİK olarak türetir (`@solana/zk-sdk`'nin HKDF zinciri) — ayrı
  * bir private key saklamaya/yedeklemeye gerek yok, aynı cüzdanla her zaman
- * aynı anahtarlar üretilir. `public_seed` olarak token hesabının adresi
- * kullanılıyor (hesap bazlı anahtarlama).
+ * aynı anahtarlar üretilir.
+ *
+ * zk-sdk'nin kendi `ConfidentialKeys.signerMessage()` çıktısı ham (okunamaz)
+ * baytlardan oluşuyor — Phantom gibi cüzdanlar, kullanıcıya gösteremediği
+ * bu tür baytları "gizlenmiş bir işlem olabilir" diye `signMessage`'da
+ * REDDEDİYOR ("You cannot sign solana transactions using sign message").
+ * `ConfidentialKeys.fromSignature()` yalnızca imzanın kendisini (64 byte)
+ * HKDF girdisi olarak kullanıyor, hangi mesajın imzalandığını doğrulamıyor
+ * — bu yüzden zk-sdk'nin ham-bayt mesajı yerine, her hesap için benzersiz,
+ * tamamen okunabilir (UTF-8) bir metin imzalatıyoruz. Tek şart: aynı
+ * (cüzdan, token hesabı) çifti için her zaman aynı metnin üretilmesi.
  */
 export async function deriveConfidentialKeys(
   wallet: WalletContextState,
@@ -204,7 +213,9 @@ export async function deriveConfidentialKeys(
       'Bağlı cüzdan mesaj imzalamayı (signMessage) desteklemiyor — gizli transfer anahtarlarını türetmek için bu gerekli.',
     )
   }
-  const message = ConfidentialKeys.signerMessage(tokenAccount.toBytes())
+  const message = new TextEncoder().encode(
+    `0nRCoin Confidential Transfer key derivation\nToken account: ${tokenAccount.toBase58()}`,
+  )
   const signature = await wallet.signMessage(message)
   const keys = ConfidentialKeys.fromSignature(signature)
   return { elgamal: keys.elgamal(), ae: keys.ae() }
