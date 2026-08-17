@@ -2,7 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { Connection, PublicKey, Transaction } from '@solana/web3.js'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
-import { TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
+import {
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+} from '@solana/spl-token'
 import { PubkeyValidityProofData } from '@solana/zk-sdk/bundler'
 import { getMintInfo } from '../lib/raydium'
 import {
@@ -173,6 +177,17 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
     setConfigureBusy(true)
     try {
       const mint = new PublicKey(mintAddr.trim())
+      // "idempotent" versiyon: hesap zaten varsa hiçbir şey yapmaz, hata
+      // vermez — bu token'dan daha önce hiç sahip olmamış biri (ör. sadece
+      // gizlice almaya hazırlanan bir alıcı) için de hesabı burada oluşturur.
+      const createAtaIx = createAssociatedTokenAccountIdempotentInstruction(
+        wallet.publicKey,
+        tokenAccount,
+        wallet.publicKey,
+        mint,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      )
       const reallocIx = buildReallocateForConfidentialTransferIx(tokenAccount, wallet.publicKey, wallet.publicKey)
       const proofData = new PubkeyValidityProofData(keys.elgamal)
       const proofIx = buildVerifyPubkeyValidityIx(proofData.toBytes())
@@ -185,7 +200,7 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
         MAX_PENDING_BALANCE_CREDIT_COUNTER,
       )
       // Sıra önemli: proofIx, configureIx'ten hemen önce olmalı.
-      const tx = new Transaction().add(reallocIx, proofIx, configureIx)
+      const tx = new Transaction().add(createAtaIx, reallocIx, proofIx, configureIx)
       const sig = await sendTx(connection, wallet, tx)
       setConfigureTx(sig)
       setAccountConfigured(true)
@@ -373,7 +388,12 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
                 onChange={(e) => setManualMint(e.target.value)}
               />
             </label>
-            <button type="submit" className="btn btn--secondary">
+            <small>
+              Bu token'dan hiç sahip değilseniz ve sadece gizlice birinden almaya hazırlanıyorsanız
+              (alıcı tarafı), mint adresini buraya yapıştırıp aşağıdaki "Hesabı Yapılandır" adımını
+              çalıştırmanız yeterli — miktar belirtmenize gerek yok.
+            </small>
+            <button type="submit" className="btn btn--secondary" style={{ marginTop: 8 }}>
               Bu Mint'i Kullan
             </button>
           </form>
