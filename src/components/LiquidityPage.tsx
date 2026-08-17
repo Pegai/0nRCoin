@@ -397,7 +397,7 @@ function PoolCreate({
 
       <div className="form-grid">
         <div className="field">
-          <span>Token A *</span>
+          <span>Havuz Oluşturmak İstediğiniz Token'i Seçin *</span>
           {mintAAddr ? (
             <div className="pool-card" style={{ marginTop: 4 }}>
               <div className="pool-card__row">
@@ -406,14 +406,14 @@ function PoolCreate({
                   Değiştir
                 </button>
               </div>
-              <code className="pool-card__id">{mintAAddr}</code>
+              {mintAAddr !== NATIVE_SOL_MINT && <code className="pool-card__id">{mintAAddr}</code>}
             </div>
           ) : (
             <CoinPicker allowSol onSelect={setMintAAddr} />
           )}
         </div>
         <div className="field">
-          <span>Token B *</span>
+          <span>Likidite Coin'ini Seçin (ör. SOL) *</span>
           {mintBAddr ? (
             <div className="pool-card" style={{ marginTop: 4 }}>
               <div className="pool-card__row">
@@ -422,7 +422,7 @@ function PoolCreate({
                   Değiştir
                 </button>
               </div>
-              <code className="pool-card__id">{mintBAddr}</code>
+              {mintBAddr !== NATIVE_SOL_MINT && <code className="pool-card__id">{mintBAddr}</code>}
             </div>
           ) : (
             <CoinPicker allowSol onSelect={setMintBAddr} />
@@ -432,7 +432,7 @@ function PoolCreate({
 
       <div className="form-grid">
         <label className="field">
-          <span>Token A Başlangıç Miktarı *</span>
+          <span>Havuza Yatırılacak Token Miktarı *</span>
           <input
             type="text"
             inputMode="decimal"
@@ -442,7 +442,7 @@ function PoolCreate({
           />
         </label>
         <label className="field">
-          <span>Token B Başlangıç Miktarı *</span>
+          <span>Likidite Coin Miktarı *</span>
           <input
             type="text"
             inputMode="decimal"
