@@ -135,7 +135,7 @@ export function CoinPicker({ token2022Only = false, allowSol = false, explorerCl
   }
 
   return (
-    <div className="pool-manage__section" style={{ marginBottom: 12 }}>
+    <div className="coin-picker-field">
       <button type="button" className="coin-picker__trigger" onClick={openPicker}>
         {selected ? (
           <span className="coin-picker__trigger-selected">
