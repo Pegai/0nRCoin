@@ -772,3 +772,114 @@ button {
     font-size: 0.72rem;
   }
 }
+
+.coin-picker__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.coin-picker__trigger:hover {
+  border-color: var(--accent-a);
+}
+
+.coin-picker__trigger-placeholder {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.coin-picker__trigger-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.coin-picker__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 7, 14, 0.72);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 1000;
+  padding: 0;
+}
+
+.coin-picker__modal {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 20px 20px 0 0;
+  width: 100%;
+  max-width: 520px;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (min-width: 640px) {
+  .coin-picker__overlay {
+    align-items: center;
+    padding: 20px;
+  }
+
+  .coin-picker__modal {
+    border-radius: var(--radius);
+    max-height: 74vh;
+  }
+}
+
+.coin-picker__modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
+}
+
+.coin-picker__modal-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.coin-picker__close {
+  background: var(--bg-elevated);
+  border: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.coin-picker__close:hover {
+  color: var(--text);
+  border-color: var(--accent-a);
+}
+
+.coin-picker__modal-body {
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+}
+
+.coin-picker__modal-body .pool-list {
+  margin-top: 0;
+}
