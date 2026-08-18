@@ -553,6 +553,17 @@ export function planConfidentialTransfer(
     openingLo,
     openingHi,
   )
+  // ÖNEMLİ: `BatchedRangeProofU128Data`'nın `openings` DİZİ parametresi,
+  // zk-sdk'nin wasm-bindgen bağlamalarında tekil (dizi olmayan) parametrelerin
+  // aksine, verilen `PedersenOpening` nesnelerinin SAHİPLİĞİNİ ALIYOR (JS
+  // tarafındaki wrapper'ı geçersiz kılıyor) — bu yüzden `openingLo`/`openingHi`
+  // kullanan HER ŞEY, rangeProof oluşturulmadan ÖNCE bitmiş olmalı. Bu sıra
+  // değiştirilirse "null pointer passed to rust" hatasıyla karşılaşılır
+  // (yerel olarak doğrulandı: obje reuse sırası değiştirilince hata tekrar üretildi).
+  const newSourceDecryptableBalance = sourceKeys.ae.encrypt(newBalance).toBytes()
+  const auditorCiphertextLo = auditorPubkey.encryptWith(amountLo, openingLo).toBytes()
+  const auditorCiphertextHi = auditorPubkey.encryptWith(amountHi, openingHi).toBytes()
+
   const paddingCommitment = sourcePubkey.encryptWith(0n, paddingOpening).commitment()
   const rangeProof = new BatchedRangeProofU128Data(
     [newCommitment, sourceCtLo.commitment(), sourceCtHi.commitment(), paddingCommitment],
@@ -565,10 +576,6 @@ export function planConfidentialTransfer(
     ]),
     [newOpening, openingLo, openingHi, paddingOpening],
   )
-
-  const newSourceDecryptableBalance = sourceKeys.ae.encrypt(newBalance).toBytes()
-  const auditorCiphertextLo = auditorPubkey.encryptWith(amountLo, openingLo).toBytes()
-  const auditorCiphertextHi = auditorPubkey.encryptWith(amountHi, openingHi).toBytes()
 
   const instructions = [
     buildProofInstruction(PROOF_IX.VerifyCiphertextCommitmentEquality, equalityProof.toBytes()),
