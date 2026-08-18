@@ -1,4 +1,4 @@
-import { Connection, PublicKey, SystemProgram, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
 import {
   TOKEN_2022_PROGRAM_ID,
   ExtensionType,
@@ -51,11 +51,21 @@ const CT_IX = {
 
 // ProofInstruction (zk_elgamal_proof programı) discriminant'ları
 const PROOF_IX = {
+  CloseContextState: 0,
   VerifyCiphertextCommitmentEquality: 3,
   VerifyPubkeyValidity: 4,
   VerifyBatchedRangeProofU128: 7,
   VerifyBatchedGroupedCiphertext3HandlesValidity: 12,
 } as const
+
+// `ProofContextState<T>` hesap düzeni (solana-zk-elgamal-proof-interface
+// state.rs): context_state_authority (32B) + proof_type (1B) + proof_context (T).
+// T'nin (her proof tipi için sabit boyutlu) uzunlukları zk-sdk'nin
+// `.context().toBytes().length` çıktısıyla yerel olarak doğrulandı.
+const PROOF_CONTEXT_STATE_HEADER_LEN = 33 // 32 (authority) + 1 (proof_type)
+const EQUALITY_PROOF_CONTEXT_LEN = 128
+const VALIDITY_PROOF_CONTEXT_LEN = 352
+const RANGE_PROOF_CONTEXT_LEN = 264
 
 const AE_CIPHERTEXT_LEN = 36 // solana-zk-sdk-pod encryption/mod.rs
 const ELGAMAL_CIPHERTEXT_LEN = 64 // solana-zk-sdk-pod encryption/mod.rs
@@ -405,11 +415,50 @@ export async function getConfidentialAccountState(
   return { approved, elgamalPubkey, availableBalance, decryptableAvailableBalance, pendingBalanceCreditCounter }
 }
 
-function buildProofInstruction(discriminant: number, proofBytes: Uint8Array): TransactionInstruction {
+/**
+ * Bir proof'u DOĞRUDAN instruction data içinde gönderirip, doğrulanan
+ * "context" verisini (public commitment/pubkey gibi, secret İÇERMEYEN
+ * kısmını) önceden oluşturulmuş bir hesaba yazdıran doğrulama instruction'ı.
+ * `encode_verify_proof(Some(context_state_info), ...)` (instruction.rs) —
+ * `context_state_account` yazılabilir, `context_state_authority` salt okunur
+ * (imza gerekmez, hesabı daha sonra kapatmak için sadece pubkey eşleşmesi
+ * yeterli).
+ */
+function buildVerifyProofWithContextIx(
+  discriminant: number,
+  proofBytes: Uint8Array,
+  contextStateAccount: PublicKey,
+  contextStateAuthority: PublicKey,
+): TransactionInstruction {
   return new TransactionInstruction({
     programId: ZK_ELGAMAL_PROOF_PROGRAM_ID,
-    keys: [],
+    keys: [
+      { pubkey: contextStateAccount, isSigner: false, isWritable: true },
+      { pubkey: contextStateAuthority, isSigner: false, isWritable: false },
+    ],
     data: Buffer.concat([Buffer.from([discriminant]), Buffer.from(proofBytes)]),
+  })
+}
+
+/**
+ * Bir proof context hesabını kapatıp kiralanmış SOL'u geri alan instruction
+ * (`close_context_state`, instruction.rs). `authority`, hesap `Verify...`
+ * instruction'ında `contextStateAuthority` olarak belirtilen aynı pubkey
+ * olmalı ve bu instruction'ı İMZALAMALI.
+ */
+function buildCloseContextStateIx(
+  contextStateAccount: PublicKey,
+  destination: PublicKey,
+  authority: PublicKey,
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: ZK_ELGAMAL_PROOF_PROGRAM_ID,
+    keys: [
+      { pubkey: contextStateAccount, isSigner: false, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from([PROOF_IX.CloseContextState]),
   })
 }
 
@@ -417,8 +466,15 @@ function buildProofInstruction(discriminant: number, proofBytes: Uint8Array): Tr
  * `TransferInstructionData` (instruction.rs:601): new_source_decryptable_available_balance
  * (AeCiphertext, 36B), transfer_amount_auditor_ciphertext_lo (64B),
  * transfer_amount_auditor_ciphertext_hi (64B), equality/validity/range proof
- * offset'leri (her biri i8, -3/-2/-1 — bu 3 proof, bu instruction'dan hemen
- * önce, bu sırayla eklenmiş olmalı). Toplam 167 byte.
+ * offset'leri (her biri i8). Toplam 167 byte.
+ *
+ * ÖNEMLİ: 3 proof'un TAMAMI (özellikle range proof, ~1000 byte) + transfer
+ * instruction'ının kendisi TEK bir transaction'a asla sığmıyor (Solana'nın
+ * 1232 byte transaction limiti bunu engelliyor — yerel olarak doğrulandı).
+ * Bu yüzden proof'lar INLINE (offset ile) değil, ÖNCEDEN ayrı transaction'larda
+ * doğrulanıp bir "context state" hesabına yazılıyor; bu instruction sadece o
+ * 3 hesabın PUBKEY'ini referans alıyor (offset alanlarının hepsi 0 = "context
+ * state hesabı kullan" anlamına geliyor, bkz. Rust dokümantasyonu).
  */
 function buildTransferInstruction(
   sourceTokenAccount: PublicKey,
@@ -428,11 +484,11 @@ function buildTransferInstruction(
   newSourceDecryptableBalance: Uint8Array,
   auditorCiphertextLo: Uint8Array,
   auditorCiphertextHi: Uint8Array,
+  equalityContext: PublicKey,
+  validityContext: PublicKey,
+  rangeContext: PublicKey,
 ): TransactionInstruction {
-  const offsets = Buffer.alloc(3)
-  offsets.writeInt8(-3, 0) // equality proof: 3 instruction önce
-  offsets.writeInt8(-2, 1) // validity proof: 2 instruction önce
-  offsets.writeInt8(-1, 2) // range proof: 1 instruction önce
+  const offsets = Buffer.alloc(3) // hepsi 0 = context state hesabı kullan
   const data = Buffer.concat([
     Buffer.from(newSourceDecryptableBalance),
     Buffer.from(auditorCiphertextLo),
@@ -443,26 +499,40 @@ function buildTransferInstruction(
     { pubkey: sourceTokenAccount, isSigner: false, isWritable: true },
     { pubkey: mint, isSigner: false, isWritable: false },
     { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
-    { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+    { pubkey: equalityContext, isSigner: false, isWritable: false },
+    { pubkey: validityContext, isSigner: false, isWritable: false },
+    { pubkey: rangeContext, isSigner: false, isWritable: false },
     { pubkey: owner, isSigner: true, isWritable: false },
   ])
 }
 
-export interface ConfidentialTransferPlan {
+/** Sırayla imzalanıp gönderilmesi gereken tek bir transaction adımı. */
+export interface ConfidentialTransferStep {
+  label: string
   instructions: TransactionInstruction[]
+  /** Cüzdan imzasına ek olarak bu transaction'ı imzalaması gereken (varsa) geçici anahtarlar. */
+  extraSigners: Keypair[]
+}
+
+export interface ConfidentialTransferPlan {
+  steps: ConfidentialTransferStep[]
   newDecryptedBalance: bigint
 }
 
 /**
- * Bir gizli transferin tüm proof'larını üretir ve gönderilecek instruction
- * listesini (sırayla: equality proof, validity proof, range proof,
- * transfer) hazırlar. Tarif `spl-token-confidential-transfer-proof-
- * generation` crate'inin `transfer_split_proof_data` fonksiyonuyla birebir
- * aynı — tek fark, zincirdeki mevcut bakiyeden tutarı çıkarma adımını
- * (`@solana/zk-sdk`'de dışa açılmamıyor) yukarıdaki `ciphertextSubtract` ile
- * yapıyoruz.
+ * Bir gizli transferin tüm proof'larını üretir ve gönderilmesi gereken
+ * transaction adımlarını (sırayla) hazırlar. Tarif `spl-token-confidential-
+ * transfer-proof-generation` crate'inin `transfer_split_proof_data`
+ * fonksiyonuyla birebir aynı — tek fark, zincirdeki mevcut bakiyeden tutarı
+ * çıkarma adımını (`@solana/zk-sdk`'de dışa açılmamıyor) yukarıdaki
+ * `ciphertextSubtract` ile yapıyoruz.
+ *
+ * `connection` parametresi yalnızca proof "context" hesaplarının
+ * (aşağıya bakınız) kira-muafiyeti (rent-exempt) lamport miktarını
+ * hesaplamak için kullanılıyor.
  */
-export function planConfidentialTransfer(
+export async function planConfidentialTransfer(
+  connection: Connection,
   sourceTokenAccount: PublicKey,
   mint: PublicKey,
   destinationTokenAccount: PublicKey,
@@ -472,7 +542,7 @@ export function planConfidentialTransfer(
   currentDecryptableAvailableBalance: Uint8Array,
   destinationElGamalPubkeyBytes: Uint8Array,
   transferAmount: bigint,
-): ConfidentialTransferPlan {
+): Promise<ConfidentialTransferPlan> {
   const currentDecryptableCt = AeCiphertext.fromBytes(currentDecryptableAvailableBalance)
   if (!currentDecryptableCt) throw new Error('Mevcut bakiye çözülemedi (bozuk AE şifreli metin).')
   const currentBalance = currentDecryptableCt.decrypt(sourceKeys.ae)
@@ -577,22 +647,126 @@ export function planConfidentialTransfer(
     [newOpening, openingLo, openingHi, paddingOpening],
   )
 
-  const instructions = [
-    buildProofInstruction(PROOF_IX.VerifyCiphertextCommitmentEquality, equalityProof.toBytes()),
-    buildProofInstruction(PROOF_IX.VerifyBatchedGroupedCiphertext3HandlesValidity, validityProof.toBytes()),
-    buildProofInstruction(PROOF_IX.VerifyBatchedRangeProofU128, rangeProof.toBytes()),
-    buildTransferInstruction(
-      sourceTokenAccount,
-      mint,
-      destinationTokenAccount,
-      owner,
-      newSourceDecryptableBalance,
-      auditorCiphertextLo,
-      auditorCiphertextHi,
-    ),
+  // ÖNEMLİ: 3 proof'un (özellikle ~1000 byte'lık range proof) TAMAMINI +
+  // transfer instruction'ını TEK bir transaction'a koymak Solana'nın 1232
+  // byte transaction limitini aşıyor (yerel olarak doğrulandı — gerçek
+  // cihazda "Index out of range" / "null pointer passed to rust" hatalarına
+  // yol açtı). Bunun yerine, resmi referans istemcilerin (spl-token CLI vb.)
+  // kullandığı "proof context hesabı" yöntemine geçiyoruz: her proof, kendi
+  // transaction'ında doğrulanıp küçük bir "context" özetini geçici bir
+  // hesaba yazıyor; asıl Transfer instruction'ı bu 3 hesabın pubkey'ini
+  // referans alıyor (proof baytlarının kendisini değil) — bu yüzden çok
+  // küçük kalıyor. Range proof tek başına da (create + verify birlikte)
+  // limiti aştığı için, hesabı oluşturma ile doğrulama ayrı transaction'lara
+  // bölündü.
+  const eqCtxKeypair = Keypair.generate()
+  const validityCtxKeypair = Keypair.generate()
+  const rangeCtxKeypair = Keypair.generate()
+
+  const [eqRent, validityRent, rangeRent] = await Promise.all([
+    connection.getMinimumBalanceForRentExemption(PROOF_CONTEXT_STATE_HEADER_LEN + EQUALITY_PROOF_CONTEXT_LEN),
+    connection.getMinimumBalanceForRentExemption(PROOF_CONTEXT_STATE_HEADER_LEN + VALIDITY_PROOF_CONTEXT_LEN),
+    connection.getMinimumBalanceForRentExemption(PROOF_CONTEXT_STATE_HEADER_LEN + RANGE_PROOF_CONTEXT_LEN),
+  ])
+
+  function createContextAccountIx(newAccount: PublicKey, space: number, lamports: number): TransactionInstruction {
+    return SystemProgram.createAccount({
+      fromPubkey: owner,
+      newAccountPubkey: newAccount,
+      lamports,
+      space,
+      programId: ZK_ELGAMAL_PROOF_PROGRAM_ID,
+    })
+  }
+
+  const steps: ConfidentialTransferStep[] = [
+    {
+      label: 'Eşitlik ispatı doğrulanıyor',
+      instructions: [
+        createContextAccountIx(
+          eqCtxKeypair.publicKey,
+          PROOF_CONTEXT_STATE_HEADER_LEN + EQUALITY_PROOF_CONTEXT_LEN,
+          eqRent,
+        ),
+        buildVerifyProofWithContextIx(
+          PROOF_IX.VerifyCiphertextCommitmentEquality,
+          equalityProof.toBytes(),
+          eqCtxKeypair.publicKey,
+          owner,
+        ),
+      ],
+      extraSigners: [eqCtxKeypair],
+    },
+    {
+      label: 'Geçerlilik ispatı doğrulanıyor',
+      instructions: [
+        createContextAccountIx(
+          validityCtxKeypair.publicKey,
+          PROOF_CONTEXT_STATE_HEADER_LEN + VALIDITY_PROOF_CONTEXT_LEN,
+          validityRent,
+        ),
+        buildVerifyProofWithContextIx(
+          PROOF_IX.VerifyBatchedGroupedCiphertext3HandlesValidity,
+          validityProof.toBytes(),
+          validityCtxKeypair.publicKey,
+          owner,
+        ),
+      ],
+      extraSigners: [validityCtxKeypair],
+    },
+    {
+      label: 'Aralık ispatı için hesap oluşturuluyor',
+      instructions: [
+        createContextAccountIx(
+          rangeCtxKeypair.publicKey,
+          PROOF_CONTEXT_STATE_HEADER_LEN + RANGE_PROOF_CONTEXT_LEN,
+          rangeRent,
+        ),
+      ],
+      extraSigners: [rangeCtxKeypair],
+    },
+    {
+      // Range proof (~1000 byte) tek başına + hesap oluşturma bile 1232
+      // byte limitine çok yakın/üstünde olduğu için ayrı bir adımda.
+      label: 'Aralık ispatı doğrulanıyor',
+      instructions: [
+        buildVerifyProofWithContextIx(
+          PROOF_IX.VerifyBatchedRangeProofU128,
+          rangeProof.toBytes(),
+          rangeCtxKeypair.publicKey,
+          owner,
+        ),
+      ],
+      extraSigners: [],
+    },
+    {
+      label: 'Gizli transfer gönderiliyor',
+      instructions: [
+        buildTransferInstruction(
+          sourceTokenAccount,
+          mint,
+          destinationTokenAccount,
+          owner,
+          newSourceDecryptableBalance,
+          auditorCiphertextLo,
+          auditorCiphertextHi,
+          eqCtxKeypair.publicKey,
+          validityCtxKeypair.publicKey,
+          rangeCtxKeypair.publicKey,
+        ),
+        // Transfer başarılı olur olmaz, artık ihtiyaç kalmayan context
+        // hesaplarını kapatıp kiralanmış SOL'u geri alıyoruz — aynı
+        // transaction içinde (atomik: transfer başarısız olursa kapatma da
+        // uygulanmaz).
+        buildCloseContextStateIx(eqCtxKeypair.publicKey, owner, owner),
+        buildCloseContextStateIx(validityCtxKeypair.publicKey, owner, owner),
+        buildCloseContextStateIx(rangeCtxKeypair.publicKey, owner, owner),
+      ],
+      extraSigners: [],
+    },
   ]
 
-  return { instructions, newDecryptedBalance: newBalance }
+  return { steps, newDecryptedBalance: newBalance }
 }
 
 // Cüzdan token listesi artık src/lib/walletTokens.ts'te (hem legacy SPL hem

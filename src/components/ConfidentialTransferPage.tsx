@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
-import { Connection, PublicKey, Transaction } from '@solana/web3.js'
+import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js'
 import type { WalletContextState } from '@solana/wallet-adapter-react'
 import {
   TOKEN_2022_PROGRAM_ID,
@@ -40,11 +40,17 @@ function fmtAmount(raw: bigint, decimals: number): string {
   return (Number(raw) / 10 ** decimals).toLocaleString('tr-TR')
 }
 
-async function sendTx(connection: Connection, wallet: WalletContextState, tx: Transaction): Promise<string> {
+async function sendTx(
+  connection: Connection,
+  wallet: WalletContextState,
+  tx: Transaction,
+  extraSigners: Keypair[] = [],
+): Promise<string> {
   if (!wallet.publicKey || !wallet.signTransaction) throw new Error('Cüzdan bağlı değil.')
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
   tx.recentBlockhash = blockhash
   tx.feePayer = wallet.publicKey
+  if (extraSigners.length > 0) tx.partialSign(...extraSigners)
   const signed = await wallet.signTransaction(tx)
   const signature = await connection.sendRawTransaction(signed.serialize())
   await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed')
@@ -78,6 +84,7 @@ export function ConfidentialTransferPage({ network }: Props) {
   const [sendAmount, setSendAmount] = useState('')
   const [recipientAddr, setRecipientAddr] = useState('')
   const [sendBusy, setSendBusy] = useState(false)
+  const [sendStatus, setSendStatus] = useState('')
   const [sendTxSig, setSendTxSig] = useState('')
 
   const [error, setError] = useState('')
@@ -301,7 +308,9 @@ export function ConfidentialTransferPage({ network }: Props) {
       const sourceState = await getConfidentialAccountState(connection, tokenAccount)
       const amountRaw = BigInt(Math.round(Number(sendAmount) * 10 ** decimals))
 
-      const plan = planConfidentialTransfer(
+      setSendStatus('Gizli transfer ispatları hazırlanıyor...')
+      const plan = await planConfidentialTransfer(
+        connection,
         tokenAccount,
         mint,
         recipientAta,
@@ -313,14 +322,25 @@ export function ConfidentialTransferPage({ network }: Props) {
         amountRaw,
       )
 
-      const tx = new Transaction().add(...plan.instructions)
-      const sig = await sendTx(connection, wallet, tx)
-      setSendTxSig(sig)
+      // Her ispat kendi transaction'ında doğrulanıyor (bkz. planConfidentialTransfer'daki
+      // açıklama — hepsi tek transaction'a sığmıyor) — bu yüzden cüzdanınız bu gönderim için
+      // birkaç kez imza isteyecek.
+      let lastSig = ''
+      for (let i = 0; i < plan.steps.length; i++) {
+        const step = plan.steps[i]
+        setSendStatus(`Adım ${i + 1}/${plan.steps.length}: ${step.label}...`)
+        const tx = new Transaction().add(...step.instructions)
+        lastSig = await sendTx(connection, wallet, tx, step.extraSigners)
+      }
+
+      setSendTxSig(lastSig)
       setCurrentBalance(plan.newDecryptedBalance)
       setSendAmount('')
+      setSendStatus('')
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'Gizli transfer başarısız oldu.')
+      setSendStatus('')
     } finally {
       setSendBusy(false)
     }
@@ -444,9 +464,14 @@ export function ConfidentialTransferPage({ network }: Props) {
                 onChange={(e) => setSendAmount(e.target.value.replace(/[^\d.]/g, ''))}
               />
             </div>
+            <p className="subtab-desc">
+              Bu işlem, Solana'nın işlem boyutu sınırı nedeniyle birkaç ayrı transaction'dan
+              oluşur — cüzdanınız gönderim sırasında birkaç kez imza isteyecektir.
+            </p>
             <button type="submit" className="btn btn--primary pool-manage__action-btn" disabled={sendBusy}>
               {sendBusy ? 'Gönderiliyor...' : 'Gizlice Gönder'}
             </button>
+            {sendStatus && <div className="alert alert--info" style={{ marginTop: 12 }}>{sendStatus}</div>}
             {sendTxSig && (
               <div className="alert alert--info" style={{ marginTop: 12 }}>
                 🔒 Gönderildi. İşlem: <code>{sendTxSig}</code>
