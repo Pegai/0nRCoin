@@ -17,8 +17,10 @@ import {
   type PoolSummary,
 } from '../lib/raydium'
 import { LOCK_DURATION_OPTIONS, lockLpTokens, type LockResult } from '../lib/lock'
-import { getTokenMetadata } from '../lib/tokenMetadata'
+import { getTokenMetadata, type TokenMeta } from '../lib/tokenMetadata'
+import { useSolUsdPrice } from '../lib/solPrice'
 import { CoinPicker } from './CoinPicker'
+import { TokenIcon, SOL_ICON } from './TokenIcon'
 import { NETWORKS, type NetworkId } from '../config'
 
 interface Props {
@@ -30,6 +32,24 @@ type SubTab = 'search' | 'create' | 'manage' | 'lock'
 function fmtNum(n: number, digits = 6): string {
   if (!Number.isFinite(n)) return '-'
   return n.toLocaleString('tr-TR', { maximumFractionDigits: digits })
+}
+
+function fmtUsd(n: number): string {
+  if (!Number.isFinite(n)) return '-'
+  return n.toLocaleString('tr-TR', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+}
+
+/** "X SOL (~$Y)" satırı — SOL/USD fiyatı henüz gelmediyse yalnızca SOL kısmını gösterir. */
+function PoolValueRow({ sol }: { sol: number }) {
+  const solUsd = useSolUsdPrice()
+  return (
+    <div className="pool-card__row">
+      <span>Havuz Değeri</span>
+      <span>
+        {fmtNum(sol, 4)} SOL{solUsd !== null && <span className="pool-card__usd"> (~{fmtUsd(sol * solUsd)})</span>}
+      </span>
+    </div>
+  )
 }
 
 /**
@@ -200,12 +220,7 @@ function PoolSearch({ network }: { network: NetworkId }) {
                   {p.mintB.symbol}
                 </span>
               </div>
-              {poolValueInSol(p) !== null && (
-                <div className="pool-card__row">
-                  <span>Havuz Değeri</span>
-                  <span>{fmtNum(poolValueInSol(p)!, 4)} SOL</span>
-                </div>
-              )}
+              {poolValueInSol(p) !== null && <PoolValueRow sol={poolValueInSol(p)!} />}
               <div className="pool-card__row">
                 <span>İşlem Ücreti</span>
                 <span>%{fmtNum(p.feeRatePct, 3)}</span>
@@ -241,8 +256,8 @@ function PoolCreate({
 }) {
   const [mintAAddr, setMintAAddr] = useState('')
   const [mintBAddr, setMintBAddr] = useState('')
-  const [mintAMeta, setMintAMeta] = useState<{ name: string; symbol: string } | null>(null)
-  const [mintBMeta, setMintBMeta] = useState<{ name: string; symbol: string } | null>(null)
+  const [mintAMeta, setMintAMeta] = useState<TokenMeta | null>(null)
+  const [mintBMeta, setMintBMeta] = useState<TokenMeta | null>(null)
   const [amountA, setAmountA] = useState('')
   const [amountB, setAmountB] = useState('')
   const [loading, setLoading] = useState(false)
@@ -256,7 +271,7 @@ function PoolCreate({
       return
     }
     if (mintAAddr === NATIVE_SOL_MINT) {
-      setMintAMeta({ name: 'Solana', symbol: 'SOL' })
+      setMintAMeta({ name: 'Solana', symbol: 'SOL', image: SOL_ICON })
       return
     }
     let cancelled = false
@@ -276,7 +291,7 @@ function PoolCreate({
       return
     }
     if (mintBAddr === NATIVE_SOL_MINT) {
-      setMintBMeta({ name: 'Solana', symbol: 'SOL' })
+      setMintBMeta({ name: 'Solana', symbol: 'SOL', image: SOL_ICON })
       return
     }
     let cancelled = false
@@ -395,37 +410,42 @@ function PoolCreate({
         fiyatını yanlış ayarlayabilir.
       </div>
 
-      <div className="form-grid">
+      <div className="token-pair-picker">
         <div className="field">
           <span>Havuz Oluşturmak İstediğiniz Token'i Seçin *</span>
           {mintAAddr ? (
-            <div className="pool-card" style={{ marginTop: 4 }}>
-              <div className="pool-card__row">
-                <span>{mintAMeta ? `${mintAMeta.name} (${mintAMeta.symbol})` : 'Seçili'}</span>
-                <button type="button" className="btn btn--secondary" onClick={() => setMintAAddr('')}>
-                  Değiştir
-                </button>
+            <div className="selected-coin" style={{ marginTop: 4 }}>
+              <TokenIcon image={mintAMeta?.image} symbol={mintAMeta?.symbol} size={28} />
+              <div className="selected-coin__info">
+                <span className="selected-coin__symbol">{mintAMeta ? mintAMeta.symbol : 'Seçili'}</span>
+                {mintAAddr !== NATIVE_SOL_MINT && <code className="selected-coin__addr">{mintAAddr}</code>}
               </div>
-              {mintAAddr !== NATIVE_SOL_MINT && <code className="pool-card__id">{mintAAddr}</code>}
+              <button type="button" className="btn btn--secondary" onClick={() => setMintAAddr('')}>
+                Değiştir
+              </button>
             </div>
           ) : (
-            <CoinPicker allowSol onSelect={setMintAAddr} />
+            <CoinPicker allowSol explorerCluster={NETWORKS[network].explorerCluster} onSelect={setMintAAddr} />
           )}
         </div>
+
+        <div className="token-pair-picker__plus">+</div>
+
         <div className="field">
           <span>Likidite Coin'ini Seçin (ör. SOL) *</span>
           {mintBAddr ? (
-            <div className="pool-card" style={{ marginTop: 4 }}>
-              <div className="pool-card__row">
-                <span>{mintBMeta ? `${mintBMeta.name} (${mintBMeta.symbol})` : 'Seçili'}</span>
-                <button type="button" className="btn btn--secondary" onClick={() => setMintBAddr('')}>
-                  Değiştir
-                </button>
+            <div className="selected-coin" style={{ marginTop: 4 }}>
+              <TokenIcon image={mintBMeta?.image} symbol={mintBMeta?.symbol} size={28} />
+              <div className="selected-coin__info">
+                <span className="selected-coin__symbol">{mintBMeta ? mintBMeta.symbol : 'Seçili'}</span>
+                {mintBAddr !== NATIVE_SOL_MINT && <code className="selected-coin__addr">{mintBAddr}</code>}
               </div>
-              {mintBAddr !== NATIVE_SOL_MINT && <code className="pool-card__id">{mintBAddr}</code>}
+              <button type="button" className="btn btn--secondary" onClick={() => setMintBAddr('')}>
+                Değiştir
+              </button>
             </div>
           ) : (
-            <CoinPicker allowSol onSelect={setMintBAddr} />
+            <CoinPicker allowSol explorerCluster={NETWORKS[network].explorerCluster} onSelect={setMintBAddr} />
           )}
         </div>
       </div>
@@ -636,12 +656,7 @@ function PoolManage({
               {fmtNum(poolInfo.mintAmountB, 4)} {poolInfo.mintB.symbol}
             </span>
           </div>
-          {poolValueInSol(poolInfo) !== null && (
-            <div className="pool-card__row">
-              <span>Havuz Değeri</span>
-              <span>{fmtNum(poolValueInSol(poolInfo)!, 4)} SOL</span>
-            </div>
-          )}
+          {poolValueInSol(poolInfo) !== null && <PoolValueRow sol={poolValueInSol(poolInfo)!} />}
 
           <hr className="pool-manage__divider" />
 
@@ -893,12 +908,7 @@ function PoolLock({
               {poolInfo.mintA.symbol || '?'} / {poolInfo.mintB.symbol || '?'}
             </strong>
           </div>
-          {poolValueInSol(poolInfo) !== null && (
-            <div className="pool-card__row">
-              <span>Havuz Değeri</span>
-              <span>{fmtNum(poolValueInSol(poolInfo)!, 4)} SOL</span>
-            </div>
-          )}
+          {poolValueInSol(poolInfo) !== null && <PoolValueRow sol={poolValueInSol(poolInfo)!} />}
           <div className="pool-card__row">
             <span>LP Bakiyeniz</span>
             <span>{fmtNum(lpBalance, 6)}</span>

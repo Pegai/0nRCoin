@@ -4,6 +4,7 @@ import { PROGRAM_ID as METADATA_PROGRAM_ID, Metadata } from '@metaplex-foundatio
 export interface TokenMeta {
   name: string
   symbol: string
+  image?: string
 }
 
 // Aynı mint için tekrar tekrar zincirden okumayı önlemek için basit bir önbellek.
@@ -31,6 +32,16 @@ export async function getTokenMetadata(connection: Connection, mint: PublicKey):
     const meta: TokenMeta = {
       name: metadata.data.name.replace(/\0/g, '').trim(),
       symbol: metadata.data.symbol.replace(/\0/g, '').trim(),
+    }
+    const uri = metadata.data.uri.replace(/\0/g, '').trim()
+    if (uri) {
+      try {
+        const res = await fetch(uri)
+        const json = await res.json()
+        if (typeof json?.image === 'string' && json.image) meta.image = json.image
+      } catch {
+        // Görsel alınamazsa isim/sembolle devam edilir — logo zorunlu değil.
+      }
     }
     cache.set(key, meta)
     return meta

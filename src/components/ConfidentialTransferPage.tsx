@@ -9,8 +9,9 @@ import {
 } from '@solana/spl-token'
 import { PubkeyValidityProofData } from '@solana/zk-sdk/bundler'
 import { getMintInfo } from '../lib/raydium'
-import { getTokenMetadata } from '../lib/tokenMetadata'
+import { getTokenMetadata, type TokenMeta } from '../lib/tokenMetadata'
 import { CoinPicker } from './CoinPicker'
+import { TokenIcon } from './TokenIcon'
 import {
   buildApplyPendingBalanceIx,
   buildConfigureAccountIx,
@@ -24,7 +25,7 @@ import {
   planConfidentialTransfer,
   type DerivedConfidentialKeys,
 } from '../lib/confidentialTransfer'
-import type { NetworkId } from '../config'
+import { NETWORKS, type NetworkId } from '../config'
 
 interface Props {
   network: NetworkId
@@ -50,12 +51,12 @@ async function sendTx(connection: Connection, wallet: WalletContextState, tx: Tr
   return signature
 }
 
-export function ConfidentialTransferPage({ network: _network }: Props) {
+export function ConfidentialTransferPage({ network }: Props) {
   const { connection } = useConnection()
   const wallet = useWallet()
 
   const [mintAddr, setMintAddr] = useState('')
-  const [selectedMeta, setSelectedMeta] = useState<{ name: string; symbol: string } | null>(null)
+  const [selectedMeta, setSelectedMeta] = useState<TokenMeta | null>(null)
 
   // Seçilen coin için hesap durumu
   const [decimals, setDecimals] = useState<number | null>(null)
@@ -348,18 +349,27 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
             (alıcı tarafı), mint adresini aşağıya yapıştırıp sonraki adımda "Hesabı Yapılandır"ı
             çalıştırmanız yeterli — miktar belirtmenize gerek yok.
           </p>
-          <CoinPicker token2022Only onSelect={selectMint} />
+          <CoinPicker
+            token2022Only
+            explorerCluster={NETWORKS[network].explorerCluster}
+            onSelect={selectMint}
+          />
         </div>
       )}
 
       {mintAddr && (
         <div className="pool-manage__section" style={{ marginTop: 20 }}>
-          <div className="pool-manage__section-title">
-            {selectedMeta ? `${selectedMeta.name} (${selectedMeta.symbol})` : 'Seçili Coin'}
+          <div className="selected-coin">
+            <TokenIcon image={selectedMeta?.image} symbol={selectedMeta?.symbol} size={28} />
+            <div className="selected-coin__info">
+              <span className="selected-coin__symbol">
+                {selectedMeta ? `${selectedMeta.name} (${selectedMeta.symbol})` : 'Seçili Coin'}
+              </span>
+              <code className="selected-coin__addr">{mintAddr}</code>
+            </div>
             <button
               type="button"
               className="btn btn--secondary"
-              style={{ marginLeft: 12 }}
               onClick={() => {
                 resetMintState()
                 setMintAddr('')
@@ -368,7 +378,6 @@ export function ConfidentialTransferPage({ network: _network }: Props) {
               Değiştir
             </button>
           </div>
-          <code className="pool-card__id">{mintAddr}</code>
 
           {!keys && (
             <form onSubmit={handleCheckAccount} style={{ marginTop: 12 }}>
